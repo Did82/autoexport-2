@@ -1,0 +1,46 @@
+# Зависимости
+node_modules
+bun.lockb
+
+# База данных (будет монтироваться через volume)
+*.db
+*.db-shm
+*.db-wal
+
+# Конфигурация (будет монтироваться через volume)
+config.json
+
+# Git
+.git
+.gitignore
+.gitattributes
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Логи
+logs
+*.log
+
+# Временные файлы
+tmp
+temp
+.tmp
+
+# Документация (опционально)
+README.md
+*.md
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
