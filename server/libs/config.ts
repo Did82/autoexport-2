@@ -1,4 +1,5 @@
 import { existsSync, readFileSync, watchFile } from 'fs';
+import path from 'path';
 
 export interface Config {
     src: string;
@@ -10,7 +11,9 @@ export interface Config {
 let configCache: Config | null = null;
 let configWatcher: ReturnType<typeof watchFile> | null = null;
 
-const CONFIG_PATH = Bun.resolveSync('config.json', process.cwd());
+// Не используем Bun.resolveSync, потому что он кидает исключение,
+// если файла нет. Нам нужен просто путь в рабочей директории.
+const CONFIG_PATH = path.resolve(process.cwd(), 'config.json');
 
 function loadConfig(): Config {
     if (existsSync(CONFIG_PATH)) {
