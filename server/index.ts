@@ -218,12 +218,12 @@ const routes = {
 // Cron jobs
 const setupCronJobs = () => {
     // Every 3 minutes for testing: copy current day
-    new Cron('*/3 * * * *', () => {
-        const today = getDateNDaysAgo(0);
-        copyDirectory(today).catch((error) => {
-            console.error(`Error copying ${today}:`, error);
-        });
-    });
+    // new Cron('*/3 * * * *', () => {
+    //     const today = getDateNDaysAgo(0);
+    //     copyDirectory(today).catch((error) => {
+    //         console.error(`Error copying ${today}:`, error);
+    //     });
+    // });
     // Every hour: copy current day
     new Cron('0 * * * *', () => {
         const today = getDateNDaysAgo(0);
