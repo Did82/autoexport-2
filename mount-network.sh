@@ -5,7 +5,7 @@
 #===============================================================================
 
 # === NFS настройки ===
-NFS_ENABLED=true                              # true/false - включить NFS
+NFS_ENABLED=false                              # true/false - включить NFS
 NFS_SERVER="192.168.188.12"                    # IP NFS-сервера (RHEL)
 NFS_SHARE="/ftp/server/export1"                    # Путь на сервере
 NFS_MOUNT="/mnt/nfs"                    # Локальная точка монтирования
@@ -499,8 +499,8 @@ main() {
     
     check_root
     detect_distro
-    update_packages
-    install_packages
+    #update_packages
+    #install_packages
     backup_fstab
     setup_nfs
     setup_smb

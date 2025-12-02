@@ -18,19 +18,6 @@ RUN bun install --frozen-lockfile
 # Копируем весь проект
 COPY . .
 
-# Создаем пользователя для безопасности (не root)
-# Если UID 1000 занят, создаем appuser с UID 1001
-RUN if id -u 1000 >/dev/null 2>&1; then \
-        useradd -m -u 1001 appuser; \
-        chown -R appuser:appuser /app; \
-    else \
-        useradd -m -u 1000 appuser; \
-        chown -R appuser:appuser /app; \
-    fi
-
-# Переключаемся на непривилегированного пользователя
-USER appuser
-
 # Открываем порт
 EXPOSE 3001
 

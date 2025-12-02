@@ -25,6 +25,8 @@ services:
       # Монтируем конфигурацию и базу данных для сохранения данных
       - ./config.json:/app/config.json:rw
       - ./autoexport.db:/app/autoexport.db:rw
+      - ./autoexport.db-shm:/app/autoexport.db-shm:rw
+      - ./autoexport.db-wal:/app/autoexport.db-wal:rw
       # Если нужно сохранять логи отдельно
       # - ./logs:/app/logs:rw
     healthcheck:
