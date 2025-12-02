@@ -26,12 +26,13 @@ SMB_OPTIONS="_netdev,x-systemd.automount,nofail"
 
 # === SSHFS настройки ===
 SSHFS_ENABLED=true                            # true/false - включить SSHFS
-SSHFS_USER="user"                             # Пользователь SSH
+SSHFS_USER="root"                             # Пользователь SSH
 SSHFS_SERVER="192.168.188.12"                 # IP сервера
 SSHFS_SHARE="/ftp/server/export1"             # Путь на сервере
 SSHFS_MOUNT="/mnt/sshfs-share"                # Локальная точка монтирования
 SSHFS_PORT="22"                               # SSH порт
-SSHFS_OPTIONS="_netdev,x-systemd.automount,x-systemd.idle-timeout=300,nofail,allow_other,reconnect,ServerAliveInterval=15,ServerAliveCountMax=3"
+#SSHFS_OPTIONS="_netdev,x-systemd.automount,x-systemd.idle-timeout=300,nofail,allow_other,reconnect,ServerAliveInterval=15,ServerAliveCountMax=3"
+SSHFS_OPTIONS="_netdev,noauto,x-systemd.automount,allow_other,reconnect"
 SSHFS_CREATE_KEY=true                         # Создать SSH-ключ если нет
 
 # === Общие настройки ===
