@@ -268,6 +268,16 @@ SMB_USERNAME="admin"
 SMB_PASSWORD="nas_password"
 ```
 
+### Только SSHFS (для сервера):
+
+```bash
+SSHFS_ENABLED=true
+SSHFS_USER="user"
+SSHFS_SERVER="192.168.188.12"
+SSHFS_SHARE="/ftp/server/export1"
+SSHFS_MOUNT="/mnt/sshfs-share"
+```
+
 ### Несколько шар
 
 Запустите скрипт несколько раз с разными настройками, или добавьте массивы:

@@ -24,11 +24,23 @@ SMB_VERSION="3.0"                             # Версия протокола 
 #SMB_OPTIONS="_netdev,x-systemd.automount,x-systemd.idle-timeout=300,nofail"
 SMB_OPTIONS="_netdev,x-systemd.automount,nofail"
 
+# === SSHFS настройки ===
+SSHFS_ENABLED=true                            # true/false - включить SSHFS
+SSHFS_USER="user"                             # Пользователь SSH
+SSHFS_SERVER="192.168.188.12"                 # IP сервера
+SSHFS_SHARE="/ftp/server/export1"             # Путь на сервере
+SSHFS_MOUNT="/mnt/sshfs-share"                # Локальная точка монтирования
+SSHFS_PORT="22"                               # SSH порт
+SSHFS_OPTIONS="_netdev,x-systemd.automount,x-systemd.idle-timeout=300,nofail,allow_other,reconnect,ServerAliveInterval=15,ServerAliveCountMax=3"
+SSHFS_CREATE_KEY=true                         # Создать SSH-ключ если нет
+
 # === Общие настройки ===
-LOCAL_UID=$(id -u)                            # UID текущего пользователя
-LOCAL_GID=$(id -g)                            # GID текущего пользователя
-CREDENTIALS_FILE="/etc/samba/.credentials"   # Файл с учётными данными SMB
-BACKUP_FSTAB=true                             # Бэкапить /etc/fstab
+LOCAL_USER=$(logname 2>/dev/null || echo $SUDO_USER)  # Текущий пользователь
+LOCAL_UID=$(id -u "$LOCAL_USER")                      # UID пользователя
+LOCAL_GID=$(id -g "$LOCAL_USER")                      # GID пользователя
+LOCAL_HOME=$(eval echo ~"$LOCAL_USER")                # Home директория
+CREDENTIALS_FILE="/etc/samba/.credentials"            # Файл с учётными данными SMB
+BACKUP_FSTAB=true                                     # Бэкапить /etc/fstab
 
 #===============================================================================
 #                         КОД СКРИПТА - НЕ ИЗМЕНЯТЬ
@@ -41,7 +53,7 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 log_info()    { echo -e "${BLUE}[INFO]${NC} $1"; }
 log_success() { echo -e "${GREEN}[OK]${NC} $1"; }
@@ -73,36 +85,42 @@ detect_distro() {
             PKG_INSTALL="apt install -y"
             NFS_PKG="nfs-common"
             SMB_PKG="cifs-utils"
+            SSHFS_PKG="sshfs"
             ;;
         fedora|rhel|centos|rocky|almalinux)
             PKG_MANAGER="dnf"
             PKG_INSTALL="dnf install -y"
             NFS_PKG="nfs-utils"
             SMB_PKG="cifs-utils"
+            SSHFS_PKG="fuse-sshfs"
             ;;
         arch|cachyos|endeavouros|manjaro)
             PKG_MANAGER="pacman"
             PKG_INSTALL="pacman -S --noconfirm"
             NFS_PKG="nfs-utils"
             SMB_PKG="cifs-utils"
+            SSHFS_PKG="sshfs"
             ;;
         *)
-            log_warn "Неизвестный дистрибутив: $DISTRO. Попытка определить по ID_LIKE..."
+            log_warn "Неизвестный дистрибутив: $DISTRO"
             if [[ $DISTRO_LIKE == *"debian"* ]] || [[ $DISTRO_LIKE == *"ubuntu"* ]]; then
                 PKG_MANAGER="apt"
                 PKG_INSTALL="apt install -y"
                 NFS_PKG="nfs-common"
                 SMB_PKG="cifs-utils"
+                SSHFS_PKG="sshfs"
             elif [[ $DISTRO_LIKE == *"fedora"* ]] || [[ $DISTRO_LIKE == *"rhel"* ]]; then
                 PKG_MANAGER="dnf"
                 PKG_INSTALL="dnf install -y"
                 NFS_PKG="nfs-utils"
                 SMB_PKG="cifs-utils"
+                SSHFS_PKG="fuse-sshfs"
             elif [[ $DISTRO_LIKE == *"arch"* ]]; then
                 PKG_MANAGER="pacman"
                 PKG_INSTALL="pacman -S --noconfirm"
                 NFS_PKG="nfs-utils"
                 SMB_PKG="cifs-utils"
+                SSHFS_PKG="sshfs"
             else
                 log_error "Не удалось определить пакетный менеджер"
                 exit 1
@@ -135,6 +153,10 @@ install_packages() {
         packages="$packages $SMB_PKG"
     fi
     
+    if [[ $SSHFS_ENABLED == true ]]; then
+        packages="$packages $SSHFS_PKG"
+    fi
+    
     if [[ -n $packages ]]; then
         log_info "Установка пакетов:$packages"
         $PKG_INSTALL $packages
@@ -151,7 +173,7 @@ backup_fstab() {
     fi
 }
 
-# Проверка, есть ли уже запись в fstab
+# Проверка записи в fstab
 fstab_entry_exists() {
     local mount_point="$1"
     grep -q "^[^#].*[[:space:]]${mount_point}[[:space:]]" /etc/fstab
@@ -166,13 +188,11 @@ setup_nfs() {
     
     log_info "=== Настройка NFS ==="
     
-    # Создание точки монтирования
     if [[ ! -d $NFS_MOUNT ]]; then
         mkdir -p "$NFS_MOUNT"
         log_success "Создана директория: $NFS_MOUNT"
     fi
     
-    # Проверка доступности сервера
     log_info "Проверка доступности NFS-сервера $NFS_SERVER..."
     if ping -c 1 -W 3 "$NFS_SERVER" &>/dev/null; then
         log_success "Сервер доступен"
@@ -180,7 +200,6 @@ setup_nfs() {
         log_warn "Сервер недоступен, но продолжаем настройку..."
     fi
     
-    # Добавление в fstab
     local fstab_entry="${NFS_SERVER}:${NFS_SHARE}  ${NFS_MOUNT}  nfs  ${NFS_OPTIONS}  0 0"
     
     if fstab_entry_exists "$NFS_MOUNT"; then
@@ -199,14 +218,12 @@ setup_nfs() {
         log_success "Добавлена запись в /etc/fstab"
     fi
     
-    # Тестовое монтирование
     log_info "Попытка монтирования NFS..."
     if mount "$NFS_MOUNT" 2>/dev/null; then
         log_success "NFS успешно смонтирован в $NFS_MOUNT"
         df -h "$NFS_MOUNT"
     else
-        log_warn "Не удалось смонтировать сейчас. Проверьте настройки сервера."
-        log_info "Команда для ручной проверки: showmount -e $NFS_SERVER"
+        log_warn "Не удалось смонтировать. Проверьте настройки сервера."
     fi
 }
 
@@ -219,13 +236,11 @@ setup_smb() {
     
     log_info "=== Настройка SMB/CIFS ==="
     
-    # Создание директории для credentials
     local creds_dir=$(dirname "$CREDENTIALS_FILE")
     if [[ ! -d $creds_dir ]]; then
         mkdir -p "$creds_dir"
     fi
     
-    # Создание файла с учётными данными
     log_info "Создание файла учётных данных..."
     cat > "$CREDENTIALS_FILE" << EOF
 username=${SMB_USERNAME}
@@ -235,13 +250,11 @@ EOF
     chmod 600 "$CREDENTIALS_FILE"
     log_success "Создан защищённый файл: $CREDENTIALS_FILE"
     
-    # Создание точки монтирования
     if [[ ! -d $SMB_MOUNT ]]; then
         mkdir -p "$SMB_MOUNT"
         log_success "Создана директория: $SMB_MOUNT"
     fi
     
-    # Проверка доступности сервера
     log_info "Проверка доступности SMB-сервера $SMB_SERVER..."
     if ping -c 1 -W 3 "$SMB_SERVER" &>/dev/null; then
         log_success "Сервер доступен"
@@ -249,7 +262,6 @@ EOF
         log_warn "Сервер недоступен, но продолжаем настройку..."
     fi
     
-    # Формирование записи fstab
     local smb_full_options="credentials=${CREDENTIALS_FILE},vers=${SMB_VERSION},uid=${LOCAL_UID},gid=${LOCAL_GID},${SMB_OPTIONS}"
     local fstab_entry="//${SMB_SERVER}/${SMB_SHARE}  ${SMB_MOUNT}  cifs  ${smb_full_options}  0 0"
     
@@ -269,14 +281,104 @@ EOF
         log_success "Добавлена запись в /etc/fstab"
     fi
     
-    # Тестовое монтирование
     log_info "Попытка монтирования SMB..."
     if mount "$SMB_MOUNT" 2>/dev/null; then
         log_success "SMB успешно смонтирован в $SMB_MOUNT"
         df -h "$SMB_MOUNT"
     else
-        log_warn "Не удалось смонтировать сейчас. Проверьте настройки сервера."
-        log_info "Команда для ручной проверки: smbclient -L //$SMB_SERVER -U $SMB_USERNAME"
+        log_warn "Не удалось смонтировать. Проверьте настройки."
+    fi
+}
+
+# Настройка SSHFS
+setup_sshfs() {
+    if [[ $SSHFS_ENABLED != true ]]; then
+        log_info "SSHFS отключён, пропуск..."
+        return
+    fi
+    
+    log_info "=== Настройка SSHFS ==="
+    
+    local ssh_key="$LOCAL_HOME/.ssh/id_ed25519"
+    
+    # Создание SSH-ключа если нужно
+    if [[ $SSHFS_CREATE_KEY == true ]] && [[ ! -f "$ssh_key" ]]; then
+        log_info "Создание SSH-ключа..."
+        sudo -u "$LOCAL_USER" ssh-keygen -t ed25519 -N "" -f "$ssh_key"
+        log_success "SSH-ключ создан: $ssh_key"
+        
+        echo ""
+        log_warn "=========================================="
+        log_warn "ВАЖНО: Скопируйте ключ на сервер вручную!"
+        log_warn "=========================================="
+        echo ""
+        echo "Выполните команду:"
+        echo -e "${GREEN}ssh-copy-id -p $SSHFS_PORT $SSHFS_USER@$SSHFS_SERVER${NC}"
+        echo ""
+        read -p "Нажмите Enter после копирования ключа..." 
+    elif [[ ! -f "$ssh_key" ]]; then
+        log_error "SSH-ключ не найден: $ssh_key"
+        log_info "Создайте ключ: ssh-keygen -t ed25519"
+        log_info "Скопируйте на сервер: ssh-copy-id -p $SSHFS_PORT $SSHFS_USER@$SSHFS_SERVER"
+        return
+    fi
+    
+    # Проверка подключения SSH
+    log_info "Проверка SSH-подключения..."
+    if sudo -u "$LOCAL_USER" ssh -p "$SSHFS_PORT" -o ConnectTimeout=5 -o BatchMode=yes "$SSHFS_USER@$SSHFS_SERVER" "echo OK" &>/dev/null; then
+        log_success "SSH-подключение работает"
+    else
+        log_warn "SSH-подключение не удалось. Проверьте ключи."
+        echo "Попробуйте: ssh-copy-id -p $SSHFS_PORT $SSHFS_USER@$SSHFS_SERVER"
+        read -p "Продолжить настройку? (y/n): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            return
+        fi
+    fi
+    
+    # Настройка fuse.conf для allow_other
+    if ! grep -q "^user_allow_other" /etc/fuse.conf 2>/dev/null; then
+        log_info "Включение user_allow_other в /etc/fuse.conf..."
+        echo "user_allow_other" >> /etc/fuse.conf
+        log_success "Настроен /etc/fuse.conf"
+    fi
+    
+    # Создание точки монтирования
+    if [[ ! -d $SSHFS_MOUNT ]]; then
+        mkdir -p "$SSHFS_MOUNT"
+        chown "$LOCAL_USER:$LOCAL_USER" "$SSHFS_MOUNT"
+        log_success "Создана директория: $SSHFS_MOUNT"
+    fi
+    
+    # Формирование записи fstab
+    local sshfs_full_options="Port=${SSHFS_PORT},IdentityFile=${ssh_key},uid=${LOCAL_UID},gid=${LOCAL_GID},${SSHFS_OPTIONS}"
+    local fstab_entry="${SSHFS_USER}@${SSHFS_SERVER}:${SSHFS_SHARE}  ${SSHFS_MOUNT}  fuse.sshfs  ${sshfs_full_options}  0 0"
+    
+    if fstab_entry_exists "$SSHFS_MOUNT"; then
+        log_warn "Запись для $SSHFS_MOUNT уже существует в /etc/fstab"
+        read -p "Заменить? (y/n): " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            sed -i "\|[[:space:]]${SSHFS_MOUNT}[[:space:]]|d" /etc/fstab
+            echo "$fstab_entry" >> /etc/fstab
+            log_success "Запись обновлена"
+        fi
+    else
+        echo "" >> /etc/fstab
+        echo "# SSHFS mount - added by setup script $(date +%Y-%m-%d)" >> /etc/fstab
+        echo "$fstab_entry" >> /etc/fstab
+        log_success "Добавлена запись в /etc/fstab"
+    fi
+    
+    # Тестовое монтирование
+    log_info "Попытка монтирования SSHFS..."
+    if mount "$SSHFS_MOUNT" 2>/dev/null; then
+        log_success "SSHFS успешно смонтирован в $SSHFS_MOUNT"
+        df -h "$SSHFS_MOUNT"
+    else
+        log_warn "Не удалось смонтировать автоматически."
+        log_info "Попробуйте вручную: sshfs ${SSHFS_USER}@${SSHFS_SERVER}:${SSHFS_SHARE} ${SSHFS_MOUNT}"
     fi
 }
 
@@ -297,66 +399,56 @@ print_summary() {
     
     if [[ $NFS_ENABLED == true ]]; then
         echo -e "${BLUE}NFS:${NC}"
-        echo "  Сервер:        $NFS_SERVER:$NFS_SHARE"
+        echo "  Сервер:             $NFS_SERVER:$NFS_SHARE"
         echo "  Точка монтирования: $NFS_MOUNT"
         echo ""
     fi
     
     if [[ $SMB_ENABLED == true ]]; then
         echo -e "${BLUE}SMB:${NC}"
-        echo "  Сервер:        //$SMB_SERVER/$SMB_SHARE"
+        echo "  Сервер:             //$SMB_SERVER/$SMB_SHARE"
         echo "  Точка монтирования: $SMB_MOUNT"
-        echo "  Credentials:   $CREDENTIALS_FILE"
+        echo "  Credentials:        $CREDENTIALS_FILE"
+        echo ""
+    fi
+    
+    if [[ $SSHFS_ENABLED == true ]]; then
+        echo -e "${BLUE}SSHFS:${NC}"
+        echo "  Сервер:             $SSHFS_USER@$SSHFS_SERVER:$SSHFS_SHARE"
+        echo "  Точка монтирования: $SSHFS_MOUNT"
+        echo "  SSH-ключ:           $LOCAL_HOME/.ssh/id_ed25519"
         echo ""
     fi
     
     echo -e "${YELLOW}Полезные команды:${NC}"
-    echo "  mount -a                    # Смонтировать все из fstab"
-    echo "  mount | grep -E 'nfs|cifs'  # Проверить монтирование"
-    echo "  cat /etc/fstab              # Просмотреть fstab"
-    echo "  umount /mnt/xxx             # Размонтировать"
+    echo "  sudo mount -a                    # Смонтировать все из fstab"
+    echo "  mount | grep -E 'nfs|cifs|fuse'  # Проверить монтирование"
+    echo "  cat /etc/fstab                   # Просмотреть fstab"
     echo ""
-    
-    if [[ $NFS_ENABLED == true ]]; then
-        echo -e "${YELLOW}Диагностика NFS:${NC}"
-        echo "  showmount -e $NFS_SERVER"
-        echo "  sudo mount -t nfs $NFS_SERVER:$NFS_SHARE /mnt/test -v"
-        echo ""
-    fi
-    
-    if [[ $SMB_ENABLED == true ]]; then
-        echo -e "${YELLOW}Диагностика SMB:${NC}"
-        echo "  smbclient -L //$SMB_SERVER -U $SMB_USERNAME"
-        echo "  sudo mount -t cifs //$SMB_SERVER/$SMB_SHARE /mnt/test -o username=$SMB_USERNAME -v"
-        echo ""
-    fi
 }
 
-# Удаление настроек (опционально)
+# Удаление настроек
 uninstall() {
     log_warn "=== УДАЛЕНИЕ НАСТРОЕК ==="
     
     # Размонтирование
-    if mountpoint -q "$NFS_MOUNT" 2>/dev/null; then
-        umount "$NFS_MOUNT"
-        log_info "Размонтирован $NFS_MOUNT"
-    fi
-    
-    if mountpoint -q "$SMB_MOUNT" 2>/dev/null; then
-        umount "$SMB_MOUNT"
-        log_info "Размонтирован $SMB_MOUNT"
-    fi
+    for mount_point in "$NFS_MOUNT" "$SMB_MOUNT" "$SSHFS_MOUNT"; do
+        if mountpoint -q "$mount_point" 2>/dev/null; then
+            umount "$mount_point" || umount -l "$mount_point"
+            log_info "Размонтирован $mount_point"
+        fi
+    done
     
     # Удаление записей из fstab
-    if [[ -n $NFS_MOUNT ]]; then
-        sed -i "\|[[:space:]]${NFS_MOUNT}[[:space:]]|d" /etc/fstab
-        sed -i "/# NFS mount - added by setup script/d" /etc/fstab
-    fi
+    for mount_point in "$NFS_MOUNT" "$SMB_MOUNT" "$SSHFS_MOUNT"; do
+        if [[ -n $mount_point ]]; then
+            sed -i "\|[[:space:]]${mount_point}[[:space:]]|d" /etc/fstab
+        fi
+    done
     
-    if [[ -n $SMB_MOUNT ]]; then
-        sed -i "\|[[:space:]]${SMB_MOUNT}[[:space:]]|d" /etc/fstab
-        sed -i "/# SMB\/CIFS mount - added by setup script/d" /etc/fstab
-    fi
+    sed -i "/# NFS mount - added by setup script/d" /etc/fstab
+    sed -i "/# SMB\/CIFS mount - added by setup script/d" /etc/fstab
+    sed -i "/# SSHFS mount - added by setup script/d" /etc/fstab
     
     # Удаление credentials
     if [[ -f $CREDENTIALS_FILE ]]; then
@@ -368,15 +460,30 @@ uninstall() {
     log_success "Настройки удалены"
 }
 
+# Справка
+show_help() {
+    echo "Использование: $0 [опции]"
+    echo ""
+    echo "Опции:"
+    echo "  --uninstall, -u   Удалить настройки"
+    echo "  --help, -h        Показать справку"
+    echo ""
+    echo "Настройте переменные в начале скрипта перед запуском."
+    echo ""
+    echo "Поддерживаемые протоколы:"
+    echo "  NFS    - для Linux серверов (быстрый, надёжный)"
+    echo "  SMB    - для NAS и Windows (универсальный)"
+    echo "  SSHFS  - через SSH (безопасный, работает везде)"
+}
+
 # Главная функция
 main() {
     echo ""
     echo "==============================================================================="
-    echo "          АВТОНАСТРОЙКА СЕТЕВЫХ ПАПОК (NFS/SMB)"
+    echo "          АВТОНАСТРОЙКА СЕТЕВЫХ ПАПОК (NFS/SMB/SSHFS)"
     echo "==============================================================================="
     echo ""
     
-    # Обработка аргументов
     case "${1:-}" in
         --uninstall|-u)
             check_root
@@ -384,13 +491,7 @@ main() {
             exit 0
             ;;
         --help|-h)
-            echo "Использование: $0 [опции]"
-            echo ""
-            echo "Опции:"
-            echo "  --uninstall, -u   Удалить настройки"
-            echo "  --help, -h        Показать справку"
-            echo ""
-            echo "Настройте переменные в начале скрипта перед запуском."
+            show_help
             exit 0
             ;;
     esac
@@ -402,6 +503,7 @@ main() {
     backup_fstab
     setup_nfs
     setup_smb
+    setup_sshfs
     reload_systemd
     print_summary
 }
