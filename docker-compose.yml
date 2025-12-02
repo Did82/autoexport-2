@@ -20,8 +20,10 @@ services:
     volumes:
       # Монтируем директории для работы с файлами
       # Измените пути на ваши реальные директории
-      - /mnt/ftp:/mnt/ftp:ro
-      - /mnt/smb:/mnt/smb:rw
+      # в формате: реальный_путь:контейнерный_путь
+      # /volume1
+      - /mnt/ftp:/mnt/ftp
+      - /mnt/smb:/mnt/smb
       # Монтируем конфигурацию и базу данных для сохранения данных
       - ./config.json:/app/config.json:rw
       - ./autoexport.db:/app/autoexport.db:rw
