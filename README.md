@@ -75,16 +75,19 @@ docker-compose up -d
 ```
 
 Остановка:
+
 ```bash
 docker-compose down
 ```
 
 Просмотр логов:
+
 ```bash
 docker-compose logs -f
 ```
 
 Пересборка после изменений:
+
 ```bash
 docker-compose up -d --build
 ```
@@ -110,6 +113,7 @@ bun copy-all
 ```
 
 Или в Docker:
+
 ```bash
 docker-compose exec autoexport bun copy-all
 ```
@@ -180,13 +184,14 @@ docker-compose exec autoexport bun copy-all
 ### Настройка
 
 1. Отредактируйте `docker-compose.yml`:
-   - Измените пути в `volumes` на ваши реальные директории
-   - При необходимости настройте переменные окружения
+
+    - Измените пути в `volumes` на ваши реальные директории
+    - При необходимости настройте переменные окружения
 
 2. Убедитесь, что директории существуют и доступны:
-   ```bash
-   ls -la /mnt/ftp /mnt/smb
-   ```
+    ```bash
+    ls -la /mnt/ftp /mnt/smb
+    ```
 
 ### Запуск
 
@@ -206,6 +211,81 @@ docker-compose up -d --build
 
 ### Важно
 
-- Файлы `config.json` и `autoexport.db` монтируются как volumes, чтобы сохраняться между перезапусками
-- Убедитесь, что контейнер имеет права на чтение/запись в монтируемые директории
-- Healthcheck проверяет доступность сервиса каждые 30 секунд
+-   Файлы `config.json` и `autoexport.db` монтируются как volumes, чтобы сохраняться между перезапусками
+-   Убедитесь, что контейнер имеет права на чтение/запись в монтируемые директории
+-   Healthcheck проверяет доступность сервиса каждые 30 секунд
+
+# Скрипт автонастройки NFS и SMB
+
+## Как использовать
+
+### 1. Сохранить и отредактировать (необязательно, файл уже есть в проекте в mount-network.sh)
+
+```bash
+nano mount-network.sh
+```
+
+Измените переменные в начале скрипта под свои нужды.
+
+### 2. Сделать исполняемым и запустить
+
+```bash
+chmod +x mount-network.sh
+sudo ./mount-network.sh
+```
+
+### 3. Удалить настройки (если нужно)
+
+```bash
+sudo ./mount-network.sh --uninstall
+```
+
+---
+
+## Примеры конфигураций
+
+### Только NFS (для RHEL-сервера):
+
+```bash
+NFS_ENABLED=true
+NFS_SERVER="192.168.1.100"
+NFS_SHARE="/srv/data"
+NFS_MOUNT="/mnt/server-data"
+
+SMB_ENABLED=false
+```
+
+### Только SMB (для NAS):
+
+```bash
+NFS_ENABLED=false
+
+SMB_ENABLED=true
+SMB_SERVER="192.168.1.50"
+SMB_SHARE="media"
+SMB_MOUNT="/mnt/nas-media"
+SMB_USERNAME="admin"
+SMB_PASSWORD="nas_password"
+```
+
+### Несколько шар
+
+Запустите скрипт несколько раз с разными настройками, или добавьте массивы:
+
+```bash
+# Для нескольких NFS-шар, добавьте в конец скрипта:
+NFS_SHARES=(
+    "192.168.1.100:/srv/data:/mnt/data"
+    "192.168.1.100:/srv/backup:/mnt/backup"
+)
+
+for share in "${NFS_SHARES[@]}"; do
+    IFS=':' read -r server path mount <<< "$share"
+    NFS_SERVER="$server"
+    NFS_SHARE="$path"
+    NFS_MOUNT="$mount"
+    setup_nfs
+done
+```
+
+---
