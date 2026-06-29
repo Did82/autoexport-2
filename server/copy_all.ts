@@ -4,6 +4,8 @@ import { readdirSync, statSync } from 'fs';
 import { join } from 'path';
 import { getConfig } from './libs/config';
 import { copyDirectory } from './services/copy.service';
+import { runTrackedFileJob } from './services/job-queue.service';
+import { assertMountReady } from './services/mount.service';
 import { validateAndNormalizePath } from './utils/securityUtils';
 import { humanizeTime, isValidDateDirectory } from './utils/utils';
 
@@ -43,13 +45,19 @@ class Spinner {
     }
 }
 
-async function copyAll() {
+let shutdownRequested = false;
+
+async function copyAll(): Promise<void> {
     // Read config from file (not DB)
     const config = getConfig();
 
     // Validate paths
     const srcPath = validateAndNormalizePath(config.src);
     const destPath = validateAndNormalizePath(config.dest);
+    await Promise.all([
+        assertMountReady('src', config),
+        assertMountReady('dest', config),
+    ]);
 
     // Read all directories from src
     const dirs = readdirSync(srcPath)
@@ -73,6 +81,9 @@ async function copyAll() {
 
     // Copy directories sequentially
     for (let i = 0; i < dirs.length; i++) {
+        if (shutdownRequested) {
+            throw new Error('Copy-all interrupted by shutdown request');
+        }
         const dir = dirs[i];
         if (!dir) continue;
 
@@ -113,33 +124,32 @@ async function copyAll() {
     console.log(`Failed: ${failed}`);
     console.log(`Time: ${minutes}m ${seconds}s`);
 
-    // Explicitly exit the process
-    process.exit(failed > 0 ? 1 : 0);
+    if (failed > 0) {
+        throw new Error(`${failed} director${failed === 1 ? 'y' : 'ies'} failed`);
+    }
 }
 
 // Handle SIGINT/SIGTERM
-let isShuttingDown = false;
-
 process.on('SIGINT', () => {
-    if (isShuttingDown) {
-        process.exit(1);
+    if (shutdownRequested) {
+        process.exit(130);
     }
-    isShuttingDown = true;
-    console.log('\n\nShutting down gracefully...');
-    process.exit(0);
+    shutdownRequested = true;
+    process.exitCode = 130;
+    console.log('\n\nShutdown requested; finishing the current directory...');
 });
 
 process.on('SIGTERM', () => {
-    if (isShuttingDown) {
-        process.exit(1);
+    if (shutdownRequested) {
+        process.exit(143);
     }
-    isShuttingDown = true;
-    console.log('\n\nShutting down gracefully...');
-    process.exit(0);
+    shutdownRequested = true;
+    process.exitCode = 143;
+    console.log('\n\nShutdown requested; finishing the current directory...');
 });
 
 // Run
-copyAll().catch((error) => {
+runTrackedFileJob('copy-all', copyAll).catch((error) => {
     console.error('Fatal error:', error);
-    process.exit(1);
+    if (!process.exitCode) process.exitCode = 1;
 });

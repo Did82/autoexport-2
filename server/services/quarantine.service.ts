@@ -8,6 +8,7 @@ import {
     getInvalidDirectories,
     QUARANTINE_DIR_NAME,
 } from '../utils/utils';
+import { assertMountReady } from './mount.service';
 
 type StorageTarget = 'src' | 'dest';
 
@@ -44,6 +45,7 @@ export async function quarantineInvalidDirectories(
     target: StorageTarget
 ): Promise<void> {
     const root = getRoot(target);
+    await assertMountReady(target);
     const quarantineRoot = join(root, QUARANTINE_DIR_NAME);
     await mkdir(quarantineRoot, { recursive: true, mode: 0o700 });
 
@@ -87,6 +89,7 @@ export async function quarantineInvalidDirectories(
 export async function cleanupQuarantine(target: StorageTarget): Promise<void> {
     const config = getConfig();
     const root = getRoot(target);
+    await assertMountReady(target, config);
     const quarantineRoot = join(root, QUARANTINE_DIR_NAME);
 
     let entries: string[];

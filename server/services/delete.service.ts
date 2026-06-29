@@ -10,6 +10,7 @@ import {
     getDiskUsage,
 } from '../utils/utils';
 import { copyDirectory } from './copy.service';
+import { assertMountReady } from './mount.service';
 
 type StorageTarget = 'src' | 'dest';
 
@@ -66,6 +67,7 @@ export async function spaceControlService(
 ): Promise<void> {
     const config = getConfig();
     const root = target === 'src' ? config.src : config.dest;
+    await assertMountReady(target, config);
     const readDiskUsage = dependencies.getUsage ?? getDiskUsage;
     let diskUsage = await readDiskUsage(root);
 

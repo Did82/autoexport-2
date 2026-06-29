@@ -8,6 +8,32 @@ export type MaintenanceAction =
     | 'quarantine_delete'
     | 'blocked_delete';
 
+export type StorageTarget = 'src' | 'dest';
+export type JobStatus =
+    | 'queued'
+    | 'running'
+    | 'success'
+    | 'failed'
+    | 'interrupted';
+
+export interface JobRun {
+    id: string;
+    name: string;
+    status: JobStatus;
+    queuedAt: string;
+    startedAt: string | null;
+    finishedAt: string | null;
+    heartbeatAt: string | null;
+    error: string | null;
+}
+
+export interface MountIdentity {
+    target: StorageTarget;
+    root: string;
+    markerId: string;
+    registeredAt: string;
+}
+
 let db: Database | null = null;
 
 const DATABASE_PATH = path.resolve(
@@ -61,6 +87,35 @@ function configureDatabase(database: Database): void {
             targetDir TEXT NOT NULL
         )
     `);
+    database.run(`
+        CREATE TABLE IF NOT EXISTS JobRun (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            status TEXT NOT NULL,
+            queuedAt TEXT NOT NULL,
+            startedAt TEXT,
+            finishedAt TEXT,
+            heartbeatAt TEXT,
+            error TEXT
+        )
+    `);
+    database.run(`
+        CREATE TABLE IF NOT EXISTS OperationLease (
+            name TEXT PRIMARY KEY,
+            ownerId TEXT NOT NULL,
+            acquiredAt TEXT NOT NULL,
+            heartbeatAt TEXT NOT NULL,
+            expiresAt TEXT NOT NULL
+        )
+    `);
+    database.run(`
+        CREATE TABLE IF NOT EXISTS MountIdentity (
+            target TEXT PRIMARY KEY,
+            root TEXT NOT NULL,
+            markerId TEXT NOT NULL,
+            registeredAt TEXT NOT NULL
+        )
+    `);
 
     ensureColumn(
         database,
@@ -84,6 +139,12 @@ function configureDatabase(database: Database): void {
     );
     database.run(
         'CREATE INDEX IF NOT EXISTS idx_error_created ON ErrorLog(createdAt)'
+    );
+    database.run(
+        'CREATE INDEX IF NOT EXISTS idx_job_queued ON JobRun(queuedAt)'
+    );
+    database.run(
+        'CREATE INDEX IF NOT EXISTS idx_job_status ON JobRun(status)'
     );
 }
 
@@ -190,12 +251,146 @@ export const dbHelpers = {
             .all();
     },
 
+    createJobRun(data: { id: string; name: string; queuedAt: string }): void {
+        getDb()
+            .prepare(`
+                INSERT INTO JobRun (id, name, status, queuedAt)
+                VALUES (?, ?, 'queued', ?)
+            `)
+            .run(data.id, data.name, data.queuedAt);
+    },
+
+    markJobRunning(id: string, timestamp: string): void {
+        getDb()
+            .prepare(`
+                UPDATE JobRun
+                SET status = 'running', startedAt = ?, heartbeatAt = ?
+                WHERE id = ?
+            `)
+            .run(timestamp, timestamp, id);
+    },
+
+    heartbeatJob(id: string, timestamp: string): void {
+        getDb()
+            .prepare(`
+                UPDATE JobRun SET heartbeatAt = ?
+                WHERE id = ? AND status = 'running'
+            `)
+            .run(timestamp, id);
+    },
+
+    finishJob(
+        id: string,
+        status: Extract<JobStatus, 'success' | 'failed' | 'interrupted'>,
+        timestamp: string,
+        error?: string
+    ): void {
+        getDb()
+            .prepare(`
+                UPDATE JobRun
+                SET status = ?, finishedAt = ?, heartbeatAt = ?, error = ?
+                WHERE id = ?
+            `)
+            .run(status, timestamp, timestamp, error ?? null, id);
+    },
+
+    getRecentJobs(limit = 50): JobRun[] {
+        const safeLimit = Math.max(1, Math.min(200, Math.trunc(limit)));
+        return getDb()
+            .prepare('SELECT * FROM JobRun ORDER BY queuedAt DESC LIMIT ?')
+            .all(safeLimit) as JobRun[];
+    },
+
+    markAbandonedJobs(cutoff: string, timestamp: string): number {
+        const result = getDb()
+            .prepare(`
+                UPDATE JobRun
+                SET status = 'interrupted', finishedAt = ?,
+                    error = 'Process stopped before the job completed'
+                WHERE status IN ('queued', 'running')
+                  AND COALESCE(heartbeatAt, queuedAt) < ?
+            `)
+            .run(timestamp, cutoff);
+        return result.changes;
+    },
+
+    acquireLease(data: {
+        name: string;
+        ownerId: string;
+        now: string;
+        expiresAt: string;
+    }): boolean {
+        const database = getDb();
+        const acquire = database.transaction(() => {
+            database
+                .prepare('DELETE FROM OperationLease WHERE name = ? AND expiresAt <= ?')
+                .run(data.name, data.now);
+            const result = database
+                .prepare(`
+                    INSERT OR IGNORE INTO OperationLease
+                        (name, ownerId, acquiredAt, heartbeatAt, expiresAt)
+                    VALUES (?, ?, ?, ?, ?)
+                `)
+                .run(
+                    data.name,
+                    data.ownerId,
+                    data.now,
+                    data.now,
+                    data.expiresAt
+                );
+            return result.changes === 1;
+        });
+        return acquire();
+    },
+
+    heartbeatLease(data: {
+        name: string;
+        ownerId: string;
+        now: string;
+        expiresAt: string;
+    }): boolean {
+        const result = getDb()
+            .prepare(`
+                UPDATE OperationLease
+                SET heartbeatAt = ?, expiresAt = ?
+                WHERE name = ? AND ownerId = ?
+            `)
+            .run(data.now, data.expiresAt, data.name, data.ownerId);
+        return result.changes === 1;
+    },
+
+    releaseLease(name: string, ownerId: string): void {
+        getDb()
+            .prepare('DELETE FROM OperationLease WHERE name = ? AND ownerId = ?')
+            .run(name, ownerId);
+    },
+
+    upsertMountIdentity(data: MountIdentity): void {
+        getDb()
+            .prepare(`
+                INSERT INTO MountIdentity (target, root, markerId, registeredAt)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(target) DO UPDATE SET
+                    root = excluded.root,
+                    markerId = excluded.markerId,
+                    registeredAt = excluded.registeredAt
+            `)
+            .run(data.target, data.root, data.markerId, data.registeredAt);
+    },
+
+    getMountIdentity(target: StorageTarget): MountIdentity | null {
+        return (getDb()
+            .prepare('SELECT * FROM MountIdentity WHERE target = ?')
+            .get(target) ?? null) as MountIdentity | null;
+    },
+
     deleteOldLogs(cutoffDate: string): void {
         const database = getDb();
         const remove = database.transaction((date: string) => {
             database.prepare('DELETE FROM CopyLog WHERE createdAt < ?').run(date);
             database.prepare('DELETE FROM DeleteLog WHERE createdAt < ?').run(date);
             database.prepare('DELETE FROM ErrorLog WHERE createdAt < ?').run(date);
+            database.prepare('DELETE FROM JobRun WHERE queuedAt < ?').run(date);
         });
         remove(cutoffDate);
     },

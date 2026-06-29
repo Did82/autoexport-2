@@ -44,7 +44,15 @@ async function runIsolated(
     code: string,
     environment: { configPath: string; databasePath: string }
 ): Promise<void> {
-    const processHandle = Bun.spawn(['bun', '-e', code], {
+    const mountModuleUrl = pathToFileURL(
+        join(process.cwd(), 'server/services/mount.service.ts')
+    ).href;
+    const registeredCode = `
+        const { registerConfiguredMounts } = await import(${JSON.stringify(mountModuleUrl)});
+        await registerConfiguredMounts();
+        ${code}
+    `;
+    const processHandle = Bun.spawn(['bun', '-e', registeredCode], {
         cwd: process.cwd(),
         env: {
             ...process.env,

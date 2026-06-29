@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Install rsync
+        run: sudo apt-get update && sudo apt-get install -y rsync
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Reject conflict-copy files
+        shell: bash
+        run: |
+          duplicates="$(find server src -type f -name '* 2.*' -print)"
+          if [[ -n "$duplicates" ]]; then
+            echo "Conflict-copy files are not allowed:"
+            echo "$duplicates"
+            exit 1
+          fi
+
+      - name: Typecheck, test, and build
+        run: bun run check
+
+      - name: Build Docker image
+        run: docker build --tag autoexport:ci .

@@ -4,11 +4,20 @@ import { Field, FieldLabel } from '@/components/ui/field';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import type { Config, CopyLog, DeleteLog, DiskUsage, ErrorLog } from '@/types';
+import type {
+    Config,
+    CopyLog,
+    DeleteLog,
+    DiskUsage,
+    ErrorLog,
+    JobRun,
+    MountStatus,
+} from '@/types';
 import { fetchAPI } from '@/utils/api';
 import { AlertCircleIcon } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { CopyLogsTab } from './CopyLogsTab';
+import { AutomationStatusCard } from './AutomationStatusCard';
 import { DeleteLogsTab } from './DeleteLogsTab';
 import { DiskUsageCard } from './DiskUsageCard';
 import { ErrorLogsTab } from './ErrorLogsTab';
@@ -28,6 +37,8 @@ export function Dashboard({ configRevision }: DashboardProps) {
     const [copyLogs, setCopyLogs] = useState<CopyLog[]>([]);
     const [deleteLogs, setDeleteLogs] = useState<DeleteLog[]>([]);
     const [errorLogs, setErrorLogs] = useState<ErrorLog[]>([]);
+    const [jobs, setJobs] = useState<JobRun[]>([]);
+    const [mounts, setMounts] = useState<MountStatus[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [autoRefresh, setAutoRefresh] = useState(false);
@@ -37,13 +48,15 @@ export function Dashboard({ configRevision }: DashboardProps) {
         setError(null);
 
         try {
-            const [space, configData, copy, maintenance, errors] =
+            const [space, configData, copy, maintenance, errors, jobRuns, mountStatuses] =
                 await Promise.all([
                     fetchAPI<SpaceData>('/api/space'),
                     fetchAPI<Config>('/api/config'),
                     fetchAPI<CopyLog[]>('/api/copy'),
                     fetchAPI<DeleteLog[]>('/api/delete'),
                     fetchAPI<ErrorLog[]>('/api/errors'),
+                    fetchAPI<JobRun[]>('/api/jobs'),
+                    fetchAPI<MountStatus[]>('/api/mounts'),
                 ]);
 
             setSpaceData(space);
@@ -51,6 +64,8 @@ export function Dashboard({ configRevision }: DashboardProps) {
             setCopyLogs(copy);
             setDeleteLogs(maintenance);
             setErrorLogs(errors);
+            setJobs(jobRuns);
+            setMounts(mountStatuses);
         } catch (loadError) {
             setError(
                 loadError instanceof Error
@@ -124,6 +139,8 @@ export function Dashboard({ configRevision }: DashboardProps) {
                     limit={config.destLimit}
                 />
             </div>
+
+            <AutomationStatusCard jobs={jobs} mounts={mounts} />
 
             <Card>
                 <CardHeader className="flex flex-row items-center justify-between gap-4">

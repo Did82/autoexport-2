@@ -109,7 +109,9 @@ export function SettingsDialog({
                 <DialogHeader>
                     <DialogTitle>Настройки</DialogTitle>
                     <DialogDescription>
-                        Пути, независимые лимиты дисков и сроки хранения
+                        Пути, независимые лимиты дисков и сроки хранения. При
+                        сохранении подключённые хранилища регистрируются по
+                        защитному маркеру.
                     </DialogDescription>
                 </DialogHeader>
 
@@ -138,6 +140,9 @@ export function SettingsDialog({
                             }
                             placeholder="/mnt/ftp"
                         />
+                        <FieldDescription>
+                            Путь должен быть подключён и доступен для записи.
+                        </FieldDescription>
                     </Field>
 
                     <Field data-disabled={disabled || undefined}>
@@ -156,6 +161,9 @@ export function SettingsDialog({
                             }
                             placeholder="/mnt/smb"
                         />
+                        <FieldDescription>
+                            Путь должен быть подключён и доступен для записи.
+                        </FieldDescription>
                     </Field>
 
                     <Field data-disabled={disabled || undefined}>

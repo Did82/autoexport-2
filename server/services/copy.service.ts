@@ -4,12 +4,17 @@ import { copyFiles } from '../libs/copy';
 import { dbHelpers } from '../libs/db';
 import { getConfig } from '../libs/config';
 import { isValidDateDirectory } from '../utils/utils';
+import { assertMountReady } from './mount.service';
 
 export async function copyDirectory(dirName: string): Promise<void> {
     if (!isValidDateDirectory(dirName)) {
         throw new Error(`Invalid directory name: ${dirName}`);
     }
     const config = getConfig();
+    await Promise.all([
+        assertMountReady('src', config),
+        assertMountReady('dest', config),
+    ]);
     const srcPath = join(config.src, dirName);
     const destPath = join(config.dest, dirName);
     

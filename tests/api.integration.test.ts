@@ -6,11 +6,13 @@ import { join } from 'node:path';
 let root = '';
 let baseUrl = '';
 let server: ReturnType<typeof Bun.spawn> | null = null;
+let srcPath = '';
+let destPath = '';
 
 async function waitForServer(url: string): Promise<void> {
     for (let attempt = 0; attempt < 50; attempt += 1) {
         try {
-            const response = await fetch(`${url}/api/health`);
+            const response = await fetch(`${url}/api/live`);
             if (response.ok) return;
         } catch {
             // Server is still starting.
@@ -22,14 +24,19 @@ async function waitForServer(url: string): Promise<void> {
 
 beforeAll(async () => {
     root = await mkdtemp(join(tmpdir(), 'autoexport-api-'));
-    const src = join(root, 'src');
-    const dest = join(root, 'dest');
+    srcPath = join(root, 'src');
+    destPath = join(root, 'dest');
     const configPath = join(root, 'config.json');
-    await mkdir(src);
-    await mkdir(dest);
+    await mkdir(srcPath);
+    await mkdir(destPath);
     await writeFile(
         configPath,
-        JSON.stringify({ src, dest, limit: 63, cleanupDays: 90 })
+        JSON.stringify({
+            src: srcPath,
+            dest: destPath,
+            limit: 63,
+            cleanupDays: 90,
+        })
     );
 
     const port = 41_000 + Math.floor(Math.random() * 2_000);
@@ -57,6 +64,33 @@ afterAll(async () => {
 });
 
 describe('configuration API', () => {
+    test('separates liveness from storage readiness', async () => {
+        expect((await fetch(`${baseUrl}/api/live`)).status).toBe(200);
+        expect((await fetch(`${baseUrl}/api/ready`)).status).toBe(503);
+
+        const registered = await fetch(`${baseUrl}/api/mounts/register`, {
+            method: 'POST',
+        });
+        expect(registered.status).toBe(200);
+        expect((await fetch(`${baseUrl}/api/ready`)).status).toBe(200);
+
+        const markerPath = join(destPath, '.autoexport-mount-id');
+        const marker = await Bun.file(markerPath).text();
+        await writeFile(markerPath, `${Bun.randomUUIDv7()}\n`);
+
+        const mismatched = await fetch(`${baseUrl}/api/ready`);
+        expect(mismatched.status).toBe(503);
+        const body = (await mismatched.json()) as {
+            checks: { mounts: Array<{ status: string }> };
+        };
+        expect(body.checks.mounts.some((mount) => mount.status === 'mismatch')).toBe(
+            true
+        );
+
+        await writeFile(markerPath, marker);
+        expect((await fetch(`${baseUrl}/api/ready`)).status).toBe(200);
+    });
+
     test('returns migrated independent limits', async () => {
         const response = await fetch(`${baseUrl}/api/config`);
         const config = (await response.json()) as Record<string, unknown>;
@@ -96,5 +130,11 @@ describe('configuration API', () => {
 
         expect(invalid.status).toBe(400);
         expect(removed.status).toBe(404);
+    });
+
+    test('returns the persistent job feed', async () => {
+        const response = await fetch(`${baseUrl}/api/jobs`);
+        expect(response.status).toBe(200);
+        expect(Array.isArray(await response.json())).toBe(true);
     });
 });

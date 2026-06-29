@@ -50,3 +50,30 @@ export interface Config {
     cleanupDays: number;
     quarantineDays: number;
 }
+
+export type JobStatus =
+    | 'queued'
+    | 'running'
+    | 'success'
+    | 'failed'
+    | 'interrupted';
+
+export interface JobRun {
+    id: string;
+    name: string;
+    status: JobStatus;
+    queuedAt: string;
+    startedAt: string | null;
+    finishedAt: string | null;
+    heartbeatAt: string | null;
+    error: string | null;
+    stale: boolean;
+}
+
+export interface MountStatus {
+    target: 'src' | 'dest';
+    root: string;
+    status: 'ok' | 'unverified' | 'unavailable' | 'mismatch';
+    message: string;
+    registeredAt?: string;
+}

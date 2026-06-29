@@ -1,6 +1,5 @@
 import { serve } from 'bun';
 import { Cron } from 'croner';
-import { existsSync } from 'node:fs';
 import index from '../src/index.html';
 import { APP_TIMEZONE, getConfig } from './libs/config';
 import { checkDatabase, dbHelpers, initSchema } from './libs/db';
@@ -11,7 +10,16 @@ import {
 } from './services/config.service';
 import { copyDirectory } from './services/copy.service';
 import { spaceControlService } from './services/delete.service';
-import { enqueueFileJob } from './services/job-queue.service';
+import {
+    enqueueFileJob,
+    LEASE_DURATION_MS,
+    markInterruptedJobsOnStartup,
+} from './services/job-queue.service';
+import {
+    assertMountReady,
+    getMountStatuses,
+    registerConfiguredMounts,
+} from './services/mount.service';
 import {
     cleanupQuarantine,
     quarantineInvalidDirectories,
@@ -23,6 +31,37 @@ function errorResponse(error: unknown, status = 500): Response {
         { error: error instanceof Error ? error.message : String(error) },
         { status }
     );
+}
+
+async function readinessResponse(): Promise<Response> {
+    let database: 'ok' | 'error' = 'error';
+    try {
+        database = checkDatabase() ? 'ok' : 'error';
+    } catch {
+        database = 'error';
+    }
+
+    try {
+        const mounts = await getMountStatuses();
+        const ready =
+            database === 'ok' && mounts.every((mount) => mount.status === 'ok');
+        return Response.json(
+            {
+                status: ready ? 'ok' : 'not_ready',
+                checks: { database, mounts },
+            },
+            { status: ready ? 200 : 503 }
+        );
+    } catch (error) {
+        return Response.json(
+            {
+                status: 'not_ready',
+                checks: { database, mounts: [] },
+                error: error instanceof Error ? error.message : String(error),
+            },
+            { status: 503 }
+        );
+    }
 }
 
 export const routes = {
@@ -44,9 +83,9 @@ export const routes = {
                     );
                 }
 
-                return Response.json(
-                    await updateConfigService(await request.json())
-                );
+                const config = await updateConfigService(await request.json());
+                await registerConfiguredMounts(config);
+                return Response.json(config);
             } catch (error) {
                 return errorResponse(error, 400);
             }
@@ -64,9 +103,13 @@ export const routes = {
                     percentage: 0,
                     error: error instanceof Error ? error.message : String(error),
                 });
+                const guardedUsage = async (target: 'src' | 'dest', root: string) => {
+                    await assertMountReady(target, config);
+                    return getDiskUsage(root);
+                };
                 const [srcDiskUsage, targetDiskUsage] = await Promise.all([
-                    getDiskUsage(config.src).catch(emptyUsage),
-                    getDiskUsage(config.dest).catch(emptyUsage),
+                    guardedUsage('src', config.src).catch(emptyUsage),
+                    guardedUsage('dest', config.dest).catch(emptyUsage),
                 ]);
 
                 return Response.json({ srcDiskUsage, targetDiskUsage });
@@ -106,27 +149,55 @@ export const routes = {
         },
     },
 
-    '/api/health': {
+    '/api/jobs': {
         GET: () => {
             try {
-                const config = getConfig();
-                const checks = {
-                    database: checkDatabase() ? 'ok' : 'error',
-                    src: existsSync(config.src) ? 'ok' : 'unavailable',
-                    dest: existsSync(config.dest) ? 'ok' : 'unavailable',
-                };
-                const status =
-                    checks.database === 'ok' &&
-                    checks.src === 'ok' &&
-                    checks.dest === 'ok'
-                        ? 'ok'
-                        : 'degraded';
-
-                return Response.json({ status, checks });
+                const staleBefore = Date.now() - LEASE_DURATION_MS * 2;
+                return Response.json(
+                    dbHelpers.getRecentJobs(50).map((job) => ({
+                        ...job,
+                        stale:
+                            job.status === 'running' &&
+                            Date.parse(job.heartbeatAt ?? job.startedAt ?? '') <
+                                staleBefore,
+                    }))
+                );
             } catch (error) {
-                return errorResponse(error, 503);
+                return errorResponse(error);
             }
         },
+    },
+
+    '/api/mounts': {
+        GET: async () => {
+            try {
+                return Response.json(await getMountStatuses());
+            } catch (error) {
+                return errorResponse(error);
+            }
+        },
+    },
+
+    '/api/mounts/register': {
+        POST: async () => {
+            try {
+                return Response.json(await registerConfiguredMounts());
+            } catch (error) {
+                return errorResponse(error, 400);
+            }
+        },
+    },
+
+    '/api/live': {
+        GET: () => Response.json({ status: 'ok' }),
+    },
+
+    '/api/ready': {
+        GET: readinessResponse,
+    },
+
+    '/api/health': {
+        GET: readinessResponse,
     },
 };
 
@@ -161,9 +232,7 @@ export function setupCronJobs(): Cron[] {
             });
         }),
         new Cron('0 5 * * *', options, () => {
-            cleanupOldLogs().catch((error) =>
-                console.error('[job:error] cleanup-logs', error)
-            );
+            scheduled('cleanup-logs', cleanupOldLogs);
         }),
         new Cron('0 6 * * *', options, () => {
             scheduled('quarantine-maintenance', async () => {
@@ -195,6 +264,10 @@ export function startServer(port = Number(process.env.PORT || 3001)) {
 if (import.meta.main) {
     initSchema();
     getConfig();
+    const interruptedJobs = markInterruptedJobsOnStartup();
+    if (interruptedJobs > 0) {
+        console.warn(`[job:recovered] marked ${interruptedJobs} job(s) interrupted`);
+    }
     setupCronJobs();
     const server = startServer();
     console.log(
