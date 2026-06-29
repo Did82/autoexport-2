@@ -17,8 +17,8 @@ SMB_ENABLED=true                              # true/false - включить SM
 SMB_SERVER="192.168.188.103"                     # IP NAS/SMB-сервера
 SMB_SHARE="sounds"                            # Имя шары (без //)
 SMB_MOUNT="/mnt/smb"                    # Локальная точка монтирования
-SMB_USERNAME="user"                           # Имя пользователя
-SMB_PASSWORD="password123"                    # Пароль
+SMB_USERNAME="${SMB_USERNAME:-user}"          # Имя пользователя
+SMB_PASSWORD="${SMB_PASSWORD:-}"              # Передайте через окружение
 SMB_DOMAIN="WORKGROUP"                        # Домен/рабочая группа
 SMB_VERSION="3.0"                             # Версия протокола (2.0, 2.1, 3.0)
 #SMB_OPTIONS="_netdev,x-systemd.automount,x-systemd.idle-timeout=300,nofail"
@@ -233,6 +233,11 @@ setup_smb() {
     if [[ $SMB_ENABLED != true ]]; then
         log_info "SMB отключён, пропуск..."
         return
+    fi
+
+    if [[ -z $SMB_PASSWORD ]]; then
+        log_error "Для SMB задайте переменную окружения SMB_PASSWORD"
+        return 1
     fi
     
     log_info "=== Настройка SMB/CIFS ==="

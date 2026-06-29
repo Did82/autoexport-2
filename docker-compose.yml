@@ -5,40 +5,30 @@ services:
       dockerfile: Dockerfile
     container_name: autoexport
     restart: unless-stopped
+    init: true
     ports:
       - "${PORT:-3001}:3001"
     environment:
-      - NODE_ENV=production
-      - PORT=3001
-      # Опционально: можно задать через .env файл
-      # - SRC_PATH=/mnt/ftp
-      # - DEST_PATH=/mnt/smb
-      # - DISK_LIMIT=78
-      # - CLEANUP_DAYS=90
+      NODE_ENV: production
+      PORT: 3001
+      APP_TIMEZONE: Europe/Minsk
+      CONFIG_PATH: /app/data/config.json
+      DATABASE_PATH: /app/data/autoexport.db
+      # Используются при первом запуске, пока config.json ещё не создан.
+      SRC_PATH: /mnt/ftp
+      DEST_PATH: /mnt/smb
+      SRC_DISK_LIMIT: ${SRC_DISK_LIMIT:-78}
+      DEST_DISK_LIMIT: ${DEST_DISK_LIMIT:-78}
+      CLEANUP_DAYS: ${CLEANUP_DAYS:-90}
+      QUARANTINE_DAYS: ${QUARANTINE_DAYS:-7}
     volumes:
-      # Монтируем директории для работы с файлами
-      # Измените пути на ваши реальные директории
-      # в формате: реальный_путь:контейнерный_путь
-      # /volume1
       - /mnt/ftp:/mnt/ftp
       - /mnt/smb:/mnt/smb
-      # Монтируем конфигурацию и базу данных для сохранения данных
-      - ./config.json:/app/config.json:rw
-      - ./autoexport.db:/app/autoexport.db:rw
-      - ./autoexport.db-shm:/app/autoexport.db-shm:rw
-      - ./autoexport.db-wal:/app/autoexport.db-wal:rw
-      # Если нужно сохранять логи отдельно
-      # - ./logs:/app/logs:rw
+      - ./data:/app/data
     healthcheck:
       test: ["CMD", "bun", "-e", "fetch('http://localhost:3001/api/health').then(r => r.ok ? process.exit(0) : process.exit(1)).catch(() => process.exit(1))"]
       interval: 30s
       timeout: 3s
       retries: 3
       start_period: 5s
-    networks:
-      - autoexport-network
-
-networks:
-  autoexport-network:
-    driver: bridge
 

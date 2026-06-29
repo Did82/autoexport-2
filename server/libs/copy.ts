@@ -1,10 +1,20 @@
 import { $ } from 'bun';
-import { existsSync, statSync } from 'fs';
+import { existsSync, statSync } from 'node:fs';
 
 export interface CopyResult {
     filesCopied: number;
     bytesCopied: string;
     totalTime: number;
+}
+
+function normalizeCopyPaths(src: string, dest: string): {
+    srcPath: string;
+    destPath: string;
+} {
+    return {
+        srcPath: src.endsWith('/') ? src : `${src}/`,
+        destPath: dest.endsWith('/') ? dest.slice(0, -1) : dest,
+    };
 }
 
 export async function copyFiles({
@@ -15,89 +25,66 @@ export async function copyFiles({
     dest: string;
 }): Promise<CopyResult> {
     const startTime = Date.now();
+    const { srcPath, destPath } = normalizeCopyPaths(src, dest);
 
-    // Normalize paths
-    const srcPath = src.endsWith('/') ? src : `${src}/`;
-    const destPath = dest.endsWith('/') ? dest.slice(0, -1) : dest;
-
-    // Check if source exists
-    if (!existsSync(srcPath)) {
+    if (!existsSync(srcPath) || !statSync(srcPath).isDirectory()) {
         throw new Error(`Source directory does not exist: ${srcPath}`);
     }
 
-    // Check if source is a directory
-    const srcStat = statSync(srcPath);
-    if (!srcStat.isDirectory()) {
-        throw new Error(`Source is not a directory: ${srcPath}`);
+    const result = await $`rsync -a --stats --no-owner --no-group ${srcPath} ${destPath}`
+        .quiet()
+        .nothrow();
+    const stderr = result.stderr.toString();
+    const output = `${stderr}\n${result.stdout.toString()}`;
+
+    if (result.exitCode !== 0) {
+        throw new Error(`rsync failed: ${stderr.trim() || `exit ${result.exitCode}`}`);
     }
 
-    // Create destination directory if it doesn't exist
-    if (!existsSync(destPath)) {
-        // Use Bun's shell to create directory (more efficient than fs/promises)
-        await $`mkdir -p ${destPath}`.quiet();
-    }
-
-    // Run rsync with stats output (stats go to stderr)
-    // Note: --stats output goes to stderr, so we need to capture it
-    // Use .quiet() to suppress normal output, but stderr with --stats will still be captured
-    const result =
-        await $`rsync -a --stats --no-owner --no-group ${srcPath} ${destPath}`.quiet();
-
-    const totalTime = Date.now() - startTime;
-
-    // Parse statistics from output (rsync outputs stats to stderr)
-    const stderrOutput = result.stderr.toString();
-    const stdoutOutput = result.stdout.toString();
-    const output = stderrOutput + stdoutOutput;
-    const outputLower = output.toLowerCase();
-
-    // Find "Number of files transferred: X" or "Number of regular files transferred: X"
-    let filesMatch = outputLower.match(
-        /number of (?:regular )?files transferred:\s*(\d+)/i
-    );
-    if (!filesMatch) {
-        filesMatch = outputLower.match(/number of files:\s*(\d+)/i);
-    }
-    const filesCopied =
-        filesMatch && filesMatch[1] ? parseInt(filesMatch[1], 10) : 0;
-
-    // Find "Total transferred file size: X bytes" (may have commas or spaces)
-    // Also check for "Total file size: X bytes" as fallback
-    let bytesMatch = outputLower.match(
-        /total transferred file size:\s*([\d,\s]+)\s*bytes/i
-    );
-    if (!bytesMatch) {
-        bytesMatch = outputLower.match(
-            /total file size:\s*([\d,\s]+)\s*bytes/i
-        );
-    }
-    // Also try without "bytes" keyword
-    if (!bytesMatch) {
-        bytesMatch = outputLower.match(
-            /total transferred file size:\s*([\d,\s]+)/i
-        );
-    }
-
-    let bytesCopied = '0';
-    if (bytesMatch && bytesMatch[1]) {
-        // Remove commas and spaces, convert to string for large numbers
-        const cleaned = bytesMatch[1].replace(/[,\s]/g, '');
-        if (cleaned) {
-            bytesCopied = cleaned;
-        }
-    }
-
-    // Debug: log output if bytes are 0 but files were copied (only in verbose mode)
-    // Suppressed in normal operation to avoid cluttering output
-
-    // If rsync failed but we have stats, return them
-    if (result.exitCode !== 0 && filesCopied === 0 && bytesCopied === '0') {
-        throw new Error(`rsync failed: ${stderrOutput}`);
-    }
+    const filesMatch =
+        output.match(/number of (?:regular )?files transferred:\s*(\d+)/i) ??
+        output.match(/number of files:\s*(\d+)/i);
+    const bytesMatch =
+        output.match(/total transferred file size:\s*([\d,\s]+)(?:\s*bytes)?/i) ??
+        output.match(/total file size:\s*([\d,\s]+)(?:\s*bytes)?/i);
 
     return {
-        filesCopied,
-        bytesCopied,
-        totalTime,
+        filesCopied: filesMatch?.[1] ? Number(filesMatch[1]) : 0,
+        bytesCopied: bytesMatch?.[1]
+            ? bytesMatch[1].replace(/[,\s]/g, '') || '0'
+            : '0',
+        totalTime: Date.now() - startTime,
     };
+}
+
+export async function verifyFiles({
+    src,
+    dest,
+}: {
+    src: string;
+    dest: string;
+}): Promise<{ synced: boolean; changes: string[] }> {
+    const { srcPath, destPath } = normalizeCopyPaths(src, dest);
+    if (!existsSync(srcPath) || !existsSync(destPath)) {
+        return { synced: false, changes: ['source or destination is missing'] };
+    }
+
+    const outputFormat = '--out-format=%i|%n';
+    const result =
+        await $`rsync -a --dry-run --itemize-changes --no-owner --no-group ${outputFormat} ${srcPath} ${destPath}`
+            .quiet()
+            .nothrow();
+    if (result.exitCode !== 0) {
+        throw new Error(
+            `rsync verification failed: ${result.stderr.toString().trim()}`
+        );
+    }
+
+    const changes = result.stdout
+        .toString()
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean);
+
+    return { synced: changes.length === 0, changes };
 }

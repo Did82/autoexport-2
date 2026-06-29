@@ -15,6 +15,13 @@ export interface DeleteLog {
     deletedDir: string;
     totalTime: number;
     percentageAfterDelete: number;
+    action:
+        | 'threshold_delete'
+        | 'quarantine_move'
+        | 'quarantine_delete'
+        | 'blocked_delete';
+    target: 'src' | 'dest' | 'unknown';
+    message?: string | null;
 }
 
 export interface ErrorLog {
@@ -35,9 +42,11 @@ export interface DiskUsage {
 }
 
 export interface Config {
+    schemaVersion: 2;
     src: string;
     dest: string;
-    limit: number;
+    srcLimit: number;
+    destLimit: number;
     cleanupDays: number;
+    quarantineDays: number;
 }
-

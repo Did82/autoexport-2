@@ -10,7 +10,7 @@ import {
 import { cn } from '@/lib/utils';
 import { format } from 'date-fns';
 import { ru } from 'date-fns/locale';
-import { Calendar as CalendarIcon } from 'lucide-react';
+import { CalendarIcon } from 'lucide-react';
 import { useState } from 'react';
 
 interface DatePickerProps {
@@ -47,7 +47,7 @@ export function DatePicker({
                         !date && 'text-muted-foreground'
                     )}
                 >
-                    <CalendarIcon className="mr-2 h-4 w-4" />
+                    <CalendarIcon data-icon="inline-start" />
                     {date ? (
                         format(date, 'dd.MM.yyyy', { locale: ru })
                     ) : (
@@ -66,8 +66,8 @@ export function DatePicker({
                     initialFocus
                     locale={ru}
                 />
-                {date && (
-                    <div className="p-3 border-t">
+                {date ? (
+                    <div className="border-t p-3">
                         <Button
                             variant="ghost"
                             size="sm"
@@ -80,7 +80,7 @@ export function DatePicker({
                             Очистить
                         </Button>
                     </div>
-                )}
+                ) : null}
             </PopoverContent>
         </Popover>
     );

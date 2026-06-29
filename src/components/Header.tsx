@@ -1,5 +1,5 @@
 import { Button } from '@/components/ui/button';
-import { Settings } from 'lucide-react';
+import { SettingsIcon } from 'lucide-react';
 import { ThemeToggle } from './ThemeToggle';
 
 interface HeaderProps {
@@ -14,7 +14,7 @@ export function Header({ onSettingsClick }: HeaderProps) {
                 <div className="flex items-center gap-2">
                     <ThemeToggle />
                     <Button variant="outline" onClick={onSettingsClick}>
-                        <Settings className="mr-2 h-4 w-4" />
+                        <SettingsIcon data-icon="inline-start" />
                         Настройки
                     </Button>
                 </div>

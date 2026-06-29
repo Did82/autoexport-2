@@ -1,7 +1,17 @@
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Badge } from '@/components/ui/badge';
+import {
+    Card,
+    CardContent,
+    CardDescription,
+    CardHeader,
+    CardTitle,
+} from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
-import { formatBytes } from '@/utils/utils';
+import { Separator } from '@/components/ui/separator';
 import type { DiskUsage } from '@/types';
+import { formatBytes } from '@/utils/utils';
+import { AlertCircleIcon } from 'lucide-react';
 
 interface DiskUsageCardProps {
     title: string;
@@ -9,72 +19,104 @@ interface DiskUsageCardProps {
     limit: number;
 }
 
-export function DiskUsageCard({ title, diskUsage, limit }: DiskUsageCardProps) {
+export function DiskUsageCard({
+    title,
+    diskUsage,
+    limit,
+}: DiskUsageCardProps) {
     const isOverLimit = diskUsage.percentage > limit;
-
-    if (diskUsage.error) {
-        return (
-            <Card>
-                <CardHeader>
-                    <CardTitle>{title}</CardTitle>
-                </CardHeader>
-                <CardContent>
-                    <div className="text-destructive">Ошибка: {diskUsage.error}</div>
-                </CardContent>
-            </Card>
-        );
-    }
 
     return (
         <Card>
             <CardHeader>
-                <CardTitle>{title}</CardTitle>
+                <div className="flex items-start justify-between gap-4">
+                    <div className="flex flex-col gap-1">
+                        <CardTitle>{title}</CardTitle>
+                        <CardDescription>Порог очистки: {limit}%</CardDescription>
+                    </div>
+                    <Badge variant={isOverLimit ? 'destructive' : 'secondary'}>
+                        {diskUsage.percentage}%
+                    </Badge>
+                </div>
             </CardHeader>
-            <CardContent className="space-y-4">
-                <div>
-                    <div className="flex justify-between text-sm mb-2">
-                        <span>Использовано</span>
-                        <span className={isOverLimit ? 'text-destructive font-semibold' : ''}>
-                            {diskUsage.percentage}%
-                        </span>
-                    </div>
-                    <Progress value={diskUsage.percentage} className="h-2" />
-                    {isOverLimit && (
-                        <p className="text-xs text-destructive mt-1">
-                            Превышен лимит {limit}%
-                        </p>
-                    )}
-                </div>
-
-                <div className="grid grid-cols-3 gap-4 text-sm">
-                    <div>
-                        <div className="text-muted-foreground">Свободно</div>
-                        <div className="font-semibold">{formatBytes(diskUsage.free)}</div>
-                    </div>
-                    <div>
-                        <div className="text-muted-foreground">Использовано</div>
-                        <div className="font-semibold">{formatBytes(diskUsage.used)}</div>
-                    </div>
-                    <div>
-                        <div className="text-muted-foreground">Всего</div>
-                        <div className="font-semibold">{formatBytes(diskUsage.total)}</div>
-                    </div>
-                </div>
-
-                {diskUsage.oldestFolder && diskUsage.newestFolder && (
-                    <div className="grid grid-cols-2 gap-4 text-sm pt-2 border-t">
-                        <div>
-                            <div className="text-muted-foreground">Самая старая</div>
-                            <div className="font-semibold">{diskUsage.oldestFolder}</div>
+            <CardContent className="flex flex-col gap-4">
+                {diskUsage.error ? (
+                    <Alert variant="destructive">
+                        <AlertCircleIcon />
+                        <AlertTitle>Диск недоступен</AlertTitle>
+                        <AlertDescription>{diskUsage.error}</AlertDescription>
+                    </Alert>
+                ) : (
+                    <>
+                        <div className="flex flex-col gap-2">
+                            <div className="flex justify-between gap-4 text-sm">
+                                <span>Использовано</span>
+                                <span className="font-medium">
+                                    {formatBytes(diskUsage.used)} из{' '}
+                                    {formatBytes(diskUsage.total)}
+                                </span>
+                            </div>
+                            <Progress value={diskUsage.percentage} />
+                            {isOverLimit ? (
+                                <p className="text-xs text-destructive">
+                                    Лимит превышен; очистка выполнится по расписанию.
+                                </p>
+                            ) : null}
                         </div>
-                        <div>
-                            <div className="text-muted-foreground">Самая новая</div>
-                            <div className="font-semibold">{diskUsage.newestFolder}</div>
+
+                        <div className="grid grid-cols-2 gap-4 text-sm sm:grid-cols-3">
+                            <div className="flex flex-col gap-1">
+                                <span className="text-muted-foreground">
+                                    Свободно
+                                </span>
+                                <span className="font-semibold">
+                                    {formatBytes(diskUsage.free)}
+                                </span>
+                            </div>
+                            <div className="flex flex-col gap-1">
+                                <span className="text-muted-foreground">
+                                    Использовано
+                                </span>
+                                <span className="font-semibold">
+                                    {formatBytes(diskUsage.used)}
+                                </span>
+                            </div>
+                            <div className="flex flex-col gap-1">
+                                <span className="text-muted-foreground">
+                                    Всего
+                                </span>
+                                <span className="font-semibold">
+                                    {formatBytes(diskUsage.total)}
+                                </span>
+                            </div>
                         </div>
-                    </div>
+
+                        {diskUsage.oldestFolder && diskUsage.newestFolder ? (
+                            <>
+                                <Separator />
+                                <div className="grid grid-cols-2 gap-4 text-sm">
+                                    <div className="flex flex-col gap-1">
+                                        <span className="text-muted-foreground">
+                                            Самая старая
+                                        </span>
+                                        <span className="font-semibold">
+                                            {diskUsage.oldestFolder}
+                                        </span>
+                                    </div>
+                                    <div className="flex flex-col gap-1">
+                                        <span className="text-muted-foreground">
+                                            Самая новая
+                                        </span>
+                                        <span className="font-semibold">
+                                            {diskUsage.newestFolder}
+                                        </span>
+                                    </div>
+                                </div>
+                            </>
+                        ) : null}
+                    </>
                 )}
             </CardContent>
         </Card>
     );
 }
-

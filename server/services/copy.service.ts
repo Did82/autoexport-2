@@ -3,8 +3,12 @@ import { join } from 'path';
 import { copyFiles } from '../libs/copy';
 import { dbHelpers } from '../libs/db';
 import { getConfig } from '../libs/config';
+import { isValidDateDirectory } from '../utils/utils';
 
 export async function copyDirectory(dirName: string): Promise<void> {
+    if (!isValidDateDirectory(dirName)) {
+        throw new Error(`Invalid directory name: ${dirName}`);
+    }
     const config = getConfig();
     const srcPath = join(config.src, dirName);
     const destPath = join(config.dest, dirName);
@@ -48,4 +52,3 @@ export async function copyDirectory(dirName: string): Promise<void> {
         throw error;
     }
 }
-

@@ -1,147 +1,153 @@
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Field, FieldLabel } from '@/components/ui/field';
+import { Skeleton } from '@/components/ui/skeleton';
+import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import type { Config, CopyLog, DeleteLog, DiskUsage, ErrorLog } from '@/types';
 import { fetchAPI } from '@/utils/api';
-import { useEffect, useState } from 'react';
+import { AlertCircleIcon } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
 import { CopyLogsTab } from './CopyLogsTab';
 import { DeleteLogsTab } from './DeleteLogsTab';
 import { DiskUsageCard } from './DiskUsageCard';
 import { ErrorLogsTab } from './ErrorLogsTab';
 
-export function Dashboard() {
-    const [spaceData, setSpaceData] = useState<{
-        srcDiskUsage: DiskUsage;
-        targetDiskUsage: DiskUsage;
-    } | null>(null);
+interface DashboardProps {
+    configRevision: number;
+}
+
+interface SpaceData {
+    srcDiskUsage: DiskUsage;
+    targetDiskUsage: DiskUsage;
+}
+
+export function Dashboard({ configRevision }: DashboardProps) {
+    const [spaceData, setSpaceData] = useState<SpaceData | null>(null);
     const [config, setConfig] = useState<Config | null>(null);
     const [copyLogs, setCopyLogs] = useState<CopyLog[]>([]);
     const [deleteLogs, setDeleteLogs] = useState<DeleteLog[]>([]);
     const [errorLogs, setErrorLogs] = useState<ErrorLog[]>([]);
     const [loading, setLoading] = useState(true);
+    const [error, setError] = useState<string | null>(null);
     const [autoRefresh, setAutoRefresh] = useState(false);
 
-    const loadData = async () => {
-        // Don't show loading spinner on auto-refresh
-        const isInitialLoad = spaceData === null;
-        if (isInitialLoad) {
-            setLoading(true);
-        }
+    const loadData = useCallback(async (showLoading = false) => {
+        if (showLoading) setLoading(true);
+        setError(null);
 
         try {
-            const [space, configData, copy, del, errors] = await Promise.all([
-                fetchAPI<{
-                    srcDiskUsage: DiskUsage;
-                    targetDiskUsage: DiskUsage;
-                }>('/api/space'),
-                fetchAPI<Config>('/api/config'),
-                fetchAPI<CopyLog[]>('/api/copy'),
-                fetchAPI<DeleteLog[]>('/api/delete'),
-                fetchAPI<ErrorLog[]>('/api/errors'),
-            ]);
+            const [space, configData, copy, maintenance, errors] =
+                await Promise.all([
+                    fetchAPI<SpaceData>('/api/space'),
+                    fetchAPI<Config>('/api/config'),
+                    fetchAPI<CopyLog[]>('/api/copy'),
+                    fetchAPI<DeleteLog[]>('/api/delete'),
+                    fetchAPI<ErrorLog[]>('/api/errors'),
+                ]);
 
             setSpaceData(space);
             setConfig(configData);
             setCopyLogs(copy);
-            setDeleteLogs(del);
+            setDeleteLogs(maintenance);
             setErrorLogs(errors);
-        } catch (error) {
-            console.error('Failed to load data:', error);
-            // Don't throw error to prevent page reload
+        } catch (loadError) {
+            setError(
+                loadError instanceof Error
+                    ? loadError.message
+                    : 'Не удалось загрузить данные'
+            );
         } finally {
-            if (isInitialLoad) {
-                setLoading(false);
-            }
+            if (showLoading) setLoading(false);
         }
-    };
-
-    // Первичная загрузка данных
-    useEffect(() => {
-        loadData();
     }, []);
 
-    // Автообновление (по умолчанию выключено, чтобы не мешать просмотру логов)
+    useEffect(() => {
+        void loadData(true);
+    }, [loadData]);
+
+    useEffect(() => {
+        if (configRevision > 0) void loadData();
+    }, [configRevision, loadData]);
+
     useEffect(() => {
         if (!autoRefresh) return;
-
-        const interval = setInterval(() => {
-            loadData().catch((error) => {
-                console.error('Auto-refresh error:', error);
-                // Don't reload page on error, just log it
-            });
-        }, 30000); // Refresh every 30 seconds
-
-        return () => clearInterval(interval);
-    }, [autoRefresh]);
+        const interval = window.setInterval(() => void loadData(), 30_000);
+        return () => window.clearInterval(interval);
+    }, [autoRefresh, loadData]);
 
     if (loading) {
         return (
-            <div className="container mx-auto px-4 py-8">
-                <div className="text-center">Загрузка...</div>
-            </div>
+            <main className="container mx-auto flex flex-col gap-6 px-4 py-8">
+                <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+                    <Skeleton className="h-64" />
+                    <Skeleton className="h-64" />
+                </div>
+                <Skeleton className="h-96" />
+            </main>
         );
     }
 
     if (!spaceData || !config) {
         return (
-            <div className="container mx-auto px-4 py-8">
-                <div className="text-center text-destructive">
-                    Ошибка загрузки данных
-                </div>
-            </div>
+            <main className="container mx-auto px-4 py-8">
+                <Alert variant="destructive">
+                    <AlertCircleIcon />
+                    <AlertTitle>Данные недоступны</AlertTitle>
+                    <AlertDescription>
+                        {error ?? 'Сервер вернул неполный ответ'}
+                    </AlertDescription>
+                </Alert>
+            </main>
         );
     }
 
     return (
-        <div className="container mx-auto px-4 py-8 space-y-6">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <main className="container mx-auto flex flex-col gap-6 px-4 py-8">
+            {error ? (
+                <Alert variant="destructive">
+                    <AlertCircleIcon />
+                    <AlertTitle>Не удалось обновить данные</AlertTitle>
+                    <AlertDescription>{error}</AlertDescription>
+                </Alert>
+            ) : null}
+
+            <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
                 <DiskUsageCard
                     title="Сервер"
                     diskUsage={spaceData.srcDiskUsage}
-                    limit={config.limit}
+                    limit={config.srcLimit}
                 />
                 <DiskUsageCard
                     title="Хранилище"
                     diskUsage={spaceData.targetDiskUsage}
-                    limit={config.limit}
+                    limit={config.destLimit}
                 />
             </div>
 
             <Card>
                 <CardHeader className="flex flex-row items-center justify-between gap-4">
-                    <CardTitle>Логи</CardTitle>
-                    <label className="flex items-center gap-2 text-sm text-muted-foreground cursor-pointer select-none">
-                        <span>Автообновление</span>
-                        <button
-                            type="button"
-                            onClick={() => setAutoRefresh((v) => !v)}
-                            className={[
-                                'relative inline-flex h-5 w-9 items-center rounded-full border transition-colors',
-                                autoRefresh
-                                    ? 'bg-primary border-primary'
-                                    : 'bg-muted border-border',
-                            ].join(' ')}
-                            aria-pressed={autoRefresh}
-                            aria-label="Переключить автообновление"
-                        >
-                            <span
-                                className={[
-                                    'inline-block h-4 w-4 transform rounded-full bg-background shadow transition-transform',
-                                    autoRefresh
-                                        ? 'translate-x-4'
-                                        : 'translate-x-1',
-                                ].join(' ')}
-                            />
-                        </button>
-                    </label>
+                    <CardTitle>Журнал операций</CardTitle>
+                    <Field orientation="horizontal" className="w-auto">
+                        <FieldLabel htmlFor="auto-refresh">
+                            Автообновление
+                        </FieldLabel>
+                        <Switch
+                            id="auto-refresh"
+                            checked={autoRefresh}
+                            onCheckedChange={setAutoRefresh}
+                            aria-label="Автоматически обновлять журнал"
+                        />
+                    </Field>
                 </CardHeader>
                 <CardContent>
                     <Tabs defaultValue="copy">
-                        <TabsList>
+                        <TabsList className="w-full max-w-full justify-start overflow-x-auto sm:w-auto">
                             <TabsTrigger value="copy">
                                 Копирование ({copyLogs.length})
                             </TabsTrigger>
                             <TabsTrigger value="delete">
-                                Удаление ({deleteLogs.length})
+                                Обслуживание ({deleteLogs.length})
                             </TabsTrigger>
                             <TabsTrigger value="errors">
                                 Ошибки ({errorLogs.length})
@@ -159,6 +165,6 @@ export function Dashboard() {
                     </Tabs>
                 </CardContent>
             </Card>
-        </div>
+        </main>
     );
 }

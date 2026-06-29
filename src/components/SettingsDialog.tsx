@@ -1,6 +1,5 @@
-'use client';
-
-import { useState, useEffect } from 'react';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Button } from '@/components/ui/button';
 import {
     Dialog,
     DialogContent,
@@ -9,12 +8,18 @@ import {
     DialogHeader,
     DialogTitle,
 } from '@/components/ui/dialog';
-import { Button } from '@/components/ui/button';
-import { Label } from '@/components/ui/label';
+import {
+    Field,
+    FieldDescription,
+    FieldGroup,
+    FieldLabel,
+} from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { Slider } from '@/components/ui/slider';
-import { fetchAPI } from '@/utils/api';
 import type { Config } from '@/types';
+import { fetchAPI } from '@/utils/api';
+import { AlertCircleIcon, LoaderCircleIcon } from 'lucide-react';
+import { useEffect, useState } from 'react';
 
 interface SettingsDialogProps {
     open: boolean;
@@ -22,33 +27,57 @@ interface SettingsDialogProps {
     onConfigUpdate?: () => void;
 }
 
-export function SettingsDialog({ open, onOpenChange, onConfigUpdate }: SettingsDialogProps) {
-    const [config, setConfig] = useState<Config>({
-        src: '',
-        dest: '',
-        limit: 78,
-        cleanupDays: 90,
-    });
+const DEFAULT_CONFIG: Config = {
+    schemaVersion: 2,
+    src: '',
+    dest: '',
+    srcLimit: 78,
+    destLimit: 78,
+    cleanupDays: 90,
+    quarantineDays: 7,
+};
+
+function firstValue(values: number[], fallback: number): number {
+    return values[0] ?? fallback;
+}
+
+export function SettingsDialog({
+    open,
+    onOpenChange,
+    onConfigUpdate,
+}: SettingsDialogProps) {
+    const [config, setConfig] = useState<Config>(DEFAULT_CONFIG);
     const [loading, setLoading] = useState(false);
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
     useEffect(() => {
-        if (open) {
-            setError(null);
-            loadConfig();
-        }
+        if (!open) return;
+
+        let active = true;
+        setLoading(true);
+        setError(null);
+        fetchAPI<Config>('/api/config')
+            .then((data) => {
+                if (active) setConfig(data);
+            })
+            .catch((loadError) => {
+                if (active) {
+                    setError(
+                        loadError instanceof Error
+                            ? loadError.message
+                            : 'Не удалось загрузить настройки'
+                    );
+                }
+            })
+            .finally(() => {
+                if (active) setLoading(false);
+            });
+
+        return () => {
+            active = false;
+        };
     }, [open]);
-
-    const loadConfig = async () => {
-        try {
-            const data = await fetchAPI<Config>('/api/config');
-            setConfig(data);
-        } catch (error) {
-            console.error('Failed to load config:', error);
-        }
-    };
-
 
     const handleSave = async () => {
         setSaving(true);
@@ -58,85 +87,196 @@ export function SettingsDialog({ open, onOpenChange, onConfigUpdate }: SettingsD
                 method: 'POST',
                 body: JSON.stringify(config),
             });
-            setConfig(updated); // Обновить локальное состояние с ответом сервера
+            setConfig(updated);
             onConfigUpdate?.();
             onOpenChange(false);
-        } catch (error) {
-            console.error('Failed to save config:', error);
-            const errorMessage = error instanceof Error ? error.message : 'Ошибка при сохранении конфигурации';
-            setError(errorMessage);
+        } catch (saveError) {
+            setError(
+                saveError instanceof Error
+                    ? saveError.message
+                    : 'Не удалось сохранить настройки'
+            );
         } finally {
             setSaving(false);
         }
     };
 
+    const disabled = loading || saving;
+
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
-            <DialogContent className="max-w-2xl">
+            <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
                 <DialogHeader>
                     <DialogTitle>Настройки</DialogTitle>
-                    <DialogDescription>Настройте параметры системы экспорта</DialogDescription>
+                    <DialogDescription>
+                        Пути, независимые лимиты дисков и сроки хранения
+                    </DialogDescription>
                 </DialogHeader>
 
-                <div className="space-y-6 py-4">
-                    {error && (
-                        <div className="p-3 bg-destructive/10 border border-destructive rounded-md text-destructive text-sm">
-                            {error}
-                        </div>
-                    )}
-                    <div className="space-y-2">
-                        <Label htmlFor="src">Исходная директория</Label>
+                {error ? (
+                    <Alert variant="destructive">
+                        <AlertCircleIcon />
+                        <AlertTitle>Ошибка настроек</AlertTitle>
+                        <AlertDescription>{error}</AlertDescription>
+                    </Alert>
+                ) : null}
+
+                <FieldGroup>
+                    <Field data-disabled={disabled || undefined}>
+                        <FieldLabel htmlFor="src">
+                            Исходная директория
+                        </FieldLabel>
                         <Input
                             id="src"
                             value={config.src}
-                            onChange={e => setConfig({ ...config, src: e.target.value })}
+                            disabled={disabled}
+                            onChange={(event) =>
+                                setConfig((current) => ({
+                                    ...current,
+                                    src: event.target.value,
+                                }))
+                            }
                             placeholder="/mnt/ftp"
                         />
-                    </div>
+                    </Field>
 
-                    <div className="space-y-2">
-                        <Label htmlFor="dest">Целевая директория</Label>
+                    <Field data-disabled={disabled || undefined}>
+                        <FieldLabel htmlFor="dest">
+                            Целевая директория
+                        </FieldLabel>
                         <Input
                             id="dest"
                             value={config.dest}
-                            onChange={e => setConfig({ ...config, dest: e.target.value })}
+                            disabled={disabled}
+                            onChange={(event) =>
+                                setConfig((current) => ({
+                                    ...current,
+                                    dest: event.target.value,
+                                }))
+                            }
                             placeholder="/mnt/smb"
                         />
-                    </div>
+                    </Field>
 
-                    <div className="space-y-2">
-                        <Label htmlFor="limit">Лимит использования диска: {config.limit}%</Label>
+                    <Field data-disabled={disabled || undefined}>
+                        <FieldLabel htmlFor="src-limit">
+                            Лимит сервера: {config.srcLimit}%
+                        </FieldLabel>
                         <Slider
-                            id="limit"
-                            min={0}
+                            id="src-limit"
+                            aria-label="Лимит сервера"
+                            min={1}
                             max={100}
-                            value={[config.limit]}
-                            onValueChange={([value]) => setConfig({ ...config, limit: value })}
+                            value={[config.srcLimit]}
+                            disabled={disabled}
+                            onValueChange={(values) =>
+                                setConfig((current) => ({
+                                    ...current,
+                                    srcLimit: firstValue(
+                                        values,
+                                        current.srcLimit
+                                    ),
+                                }))
+                            }
                         />
-                    </div>
+                        <FieldDescription>
+                            Очистка источника запускается только после проверки
+                            копии.
+                        </FieldDescription>
+                    </Field>
 
-                    <div className="space-y-2">
-                        <Label htmlFor="cleanupDays">Дней хранения логов: {config.cleanupDays}</Label>
+                    <Field data-disabled={disabled || undefined}>
+                        <FieldLabel htmlFor="dest-limit">
+                            Лимит хранилища: {config.destLimit}%
+                        </FieldLabel>
                         <Slider
-                            id="cleanupDays"
-                            min={0}
+                            id="dest-limit"
+                            aria-label="Лимит хранилища"
+                            min={1}
+                            max={100}
+                            value={[config.destLimit]}
+                            disabled={disabled}
+                            onValueChange={(values) =>
+                                setConfig((current) => ({
+                                    ...current,
+                                    destLimit: firstValue(
+                                        values,
+                                        current.destLimit
+                                    ),
+                                }))
+                            }
+                        />
+                    </Field>
+
+                    <Field data-disabled={disabled || undefined}>
+                        <FieldLabel htmlFor="cleanup-days">
+                            Хранение журналов: {config.cleanupDays} дней
+                        </FieldLabel>
+                        <Slider
+                            id="cleanup-days"
+                            aria-label="Хранение журналов"
+                            min={1}
                             max={365}
                             value={[config.cleanupDays]}
-                            onValueChange={([value]) => setConfig({ ...config, cleanupDays: value })}
+                            disabled={disabled}
+                            onValueChange={(values) =>
+                                setConfig((current) => ({
+                                    ...current,
+                                    cleanupDays: firstValue(
+                                        values,
+                                        current.cleanupDays
+                                    ),
+                                }))
+                            }
                         />
-                    </div>
-                </div>
+                    </Field>
+
+                    <Field data-disabled={disabled || undefined}>
+                        <FieldLabel htmlFor="quarantine-days">
+                            Карантин: {config.quarantineDays} дней
+                        </FieldLabel>
+                        <Slider
+                            id="quarantine-days"
+                            aria-label="Срок карантина"
+                            min={1}
+                            max={30}
+                            value={[config.quarantineDays]}
+                            disabled={disabled}
+                            onValueChange={(values) =>
+                                setConfig((current) => ({
+                                    ...current,
+                                    quarantineDays: firstValue(
+                                        values,
+                                        current.quarantineDays
+                                    ),
+                                }))
+                            }
+                        />
+                        <FieldDescription>
+                            Нестандартные папки удаляются только после карантина.
+                        </FieldDescription>
+                    </Field>
+                </FieldGroup>
 
                 <DialogFooter>
-                    <Button variant="outline" onClick={() => onOpenChange(false)}>
+                    <Button
+                        variant="outline"
+                        onClick={() => onOpenChange(false)}
+                        disabled={saving}
+                    >
                         Отмена
                     </Button>
-                    <Button onClick={handleSave} disabled={saving}>
-                        {saving ? 'Сохранение...' : 'Сохранить'}
+                    <Button onClick={handleSave} disabled={disabled}>
+                        {saving ? (
+                            <LoaderCircleIcon
+                                data-icon="inline-start"
+                                className="animate-spin"
+                            />
+                        ) : null}
+                        {saving ? 'Сохранение' : 'Сохранить'}
                     </Button>
                 </DialogFooter>
             </DialogContent>
         </Dialog>
     );
 }
-

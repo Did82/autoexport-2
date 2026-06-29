@@ -95,7 +95,7 @@ const DropdownMenuCheckboxItem = React.forwardRef<
     >
         <span className="absolute left-2 flex h-3.5 w-3.5 items-center justify-center">
             <DropdownMenuPrimitive.ItemIndicator>
-                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <svg className="size-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                 </svg>
             </DropdownMenuPrimitive.ItemIndicator>
@@ -119,7 +119,7 @@ const DropdownMenuRadioItem = React.forwardRef<
     >
         <span className="absolute left-2 flex h-3.5 w-3.5 items-center justify-center">
             <DropdownMenuPrimitive.ItemIndicator>
-                <div className="h-2 w-2 rounded-full bg-current" />
+                <div className="size-2 rounded-full bg-current" />
             </DropdownMenuPrimitive.ItemIndicator>
         </span>
         {children}
@@ -171,4 +171,3 @@ export {
     DropdownMenuSubTrigger,
     DropdownMenuRadioGroup,
 };
-

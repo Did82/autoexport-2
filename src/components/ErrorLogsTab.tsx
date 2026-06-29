@@ -1,33 +1,25 @@
-'use client';
-
-import { LogTable } from './LogTable';
-import { formatDate } from '@/utils/utils';
 import type { ErrorLog } from '@/types';
+import { formatDate } from '@/utils/utils';
+import { useMemo } from 'react';
+import { LogTable, type LogColumn } from './LogTable';
 
 interface ErrorLogsTabProps {
     logs: ErrorLog[];
 }
 
 export function ErrorLogsTab({ logs }: ErrorLogsTabProps) {
-    return (
-        <LogTable
-            data={logs}
-            columns={[
-                {
-                    key: 'createdAt',
-                    label: 'Дата',
-                    render: value => formatDate(value),
-                },
-                {
-                    key: 'targetDir',
-                    label: 'Целевая директория',
-                },
-                {
-                    key: 'errorMsg',
-                    label: 'Ошибка',
-                },
-            ]}
-        />
+    const columns = useMemo<Array<LogColumn<ErrorLog>>>(
+        () => [
+            {
+                key: 'createdAt',
+                label: 'Дата',
+                render: (value) => formatDate(String(value)),
+            },
+            { key: 'targetDir', label: 'Целевой путь' },
+            { key: 'errorMsg', label: 'Ошибка' },
+        ],
+        []
     );
-}
 
+    return <LogTable data={logs} columns={columns} />;
+}

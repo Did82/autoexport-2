@@ -1,22 +1,39 @@
 import { Database } from 'bun:sqlite';
+import { mkdirSync } from 'node:fs';
+import path from 'node:path';
+
+export type MaintenanceAction =
+    | 'threshold_delete'
+    | 'quarantine_move'
+    | 'quarantine_delete'
+    | 'blocked_delete';
 
 let db: Database | null = null;
 
-export function getDb(): Database {
-    if (!db) {
-        db = new Database('autoexport.db');
-        initSchema();
+const DATABASE_PATH = path.resolve(
+    process.env.DATABASE_PATH || path.join(process.cwd(), 'autoexport.db')
+);
+
+function ensureColumn(
+    database: Database,
+    table: string,
+    column: string,
+    definition: string
+): void {
+    const columns = database
+        .query(`PRAGMA table_info(${table})`)
+        .all() as Array<{ name: string }>;
+
+    if (!columns.some((item) => item.name === column)) {
+        database.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
     }
-    return db;
 }
 
-export function initSchema() {
-    const database = getDb();
-
-    // Enable WAL mode for better performance
+function configureDatabase(database: Database): void {
     database.run('PRAGMA journal_mode = WAL');
+    database.run('PRAGMA foreign_keys = ON');
+    database.run('PRAGMA busy_timeout = 5000');
 
-    // CopyLog table
     database.run(`
         CREATE TABLE IF NOT EXISTS CopyLog (
             id TEXT PRIMARY KEY,
@@ -27,8 +44,6 @@ export function initSchema() {
             bytesCopied TEXT NOT NULL
         )
     `);
-
-    // DeleteLog table
     database.run(`
         CREATE TABLE IF NOT EXISTS DeleteLog (
             id TEXT PRIMARY KEY,
@@ -38,8 +53,6 @@ export function initSchema() {
             percentageAfterDelete INTEGER NOT NULL
         )
     `);
-
-    // ErrorLog table
     database.run(`
         CREATE TABLE IF NOT EXISTS ErrorLog (
             id TEXT PRIMARY KEY,
@@ -49,38 +62,48 @@ export function initSchema() {
         )
     `);
 
-    // Create indexes for performance
-    database.run(`
-        CREATE INDEX IF NOT EXISTS idx_copy_created ON CopyLog(createdAt);
-        CREATE INDEX IF NOT EXISTS idx_delete_created ON DeleteLog(createdAt);
-        CREATE INDEX IF NOT EXISTS idx_error_created ON ErrorLog(createdAt);
-    `);
+    ensureColumn(
+        database,
+        'DeleteLog',
+        'action',
+        "TEXT NOT NULL DEFAULT 'threshold_delete'"
+    );
+    ensureColumn(
+        database,
+        'DeleteLog',
+        'target',
+        "TEXT NOT NULL DEFAULT 'unknown'"
+    );
+    ensureColumn(database, 'DeleteLog', 'message', 'TEXT');
+
+    database.run(
+        'CREATE INDEX IF NOT EXISTS idx_copy_created ON CopyLog(createdAt)'
+    );
+    database.run(
+        'CREATE INDEX IF NOT EXISTS idx_delete_created ON DeleteLog(createdAt)'
+    );
+    database.run(
+        'CREATE INDEX IF NOT EXISTS idx_error_created ON ErrorLog(createdAt)'
+    );
 }
 
-// Prepared statements
-const insertCopyLogStmt = () => {
-    const database = getDb();
-    return database.prepare(`
-        INSERT INTO CopyLog (id, createdAt, copiedDir, filesCopied, totalTime, bytesCopied)
-        VALUES (?, ?, ?, ?, ?, ?)
-    `);
-};
+export function getDb(): Database {
+    if (!db) {
+        mkdirSync(path.dirname(DATABASE_PATH), { recursive: true });
+        db = new Database(DATABASE_PATH, { create: true });
+        configureDatabase(db);
+    }
+    return db;
+}
 
-const insertDeleteLogStmt = () => {
-    const database = getDb();
-    return database.prepare(`
-        INSERT INTO DeleteLog (id, createdAt, deletedDir, totalTime, percentageAfterDelete)
-        VALUES (?, ?, ?, ?, ?)
-    `);
-};
+export function initSchema(): void {
+    getDb();
+}
 
-const insertErrorLogStmt = () => {
-    const database = getDb();
-    return database.prepare(`
-        INSERT INTO ErrorLog (id, createdAt, errorMsg, targetDir)
-        VALUES (?, ?, ?, ?)
-    `);
-};
+export function checkDatabase(): boolean {
+    const row = getDb().query('SELECT 1 AS ok').get() as { ok: number } | null;
+    return row?.ok === 1;
+}
 
 export const dbHelpers = {
     insertCopyLog(data: {
@@ -90,16 +113,21 @@ export const dbHelpers = {
         filesCopied: number;
         totalTime: number;
         bytesCopied: string;
-    }) {
-        const stmt = insertCopyLogStmt();
-        stmt.run(
-            data.id,
-            data.createdAt,
-            data.copiedDir,
-            data.filesCopied,
-            data.totalTime,
-            data.bytesCopied
-        );
+    }): void {
+        getDb()
+            .prepare(`
+                INSERT INTO CopyLog
+                    (id, createdAt, copiedDir, filesCopied, totalTime, bytesCopied)
+                VALUES (?, ?, ?, ?, ?, ?)
+            `)
+            .run(
+                data.id,
+                data.createdAt,
+                data.copiedDir,
+                data.filesCopied,
+                data.totalTime,
+                data.bytesCopied
+            );
     },
 
     insertDeleteLog(data: {
@@ -108,15 +136,26 @@ export const dbHelpers = {
         deletedDir: string;
         totalTime: number;
         percentageAfterDelete: number;
-    }) {
-        const stmt = insertDeleteLogStmt();
-        stmt.run(
-            data.id,
-            data.createdAt,
-            data.deletedDir,
-            data.totalTime,
-            data.percentageAfterDelete
-        );
+        action: MaintenanceAction;
+        target: 'src' | 'dest' | 'unknown';
+        message?: string;
+    }): void {
+        getDb()
+            .prepare(`
+                INSERT INTO DeleteLog
+                    (id, createdAt, deletedDir, totalTime, percentageAfterDelete, action, target, message)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            `)
+            .run(
+                data.id,
+                data.createdAt,
+                data.deletedDir,
+                data.totalTime,
+                data.percentageAfterDelete,
+                data.action,
+                data.target,
+                data.message ?? null
+            );
     },
 
     insertErrorLog(data: {
@@ -124,46 +163,40 @@ export const dbHelpers = {
         createdAt: string;
         errorMsg: string;
         targetDir: string;
-    }) {
-        const stmt = insertErrorLogStmt();
-        stmt.run(data.id, data.createdAt, data.errorMsg, data.targetDir);
+    }): void {
+        getDb()
+            .prepare(`
+                INSERT INTO ErrorLog (id, createdAt, errorMsg, targetDir)
+                VALUES (?, ?, ?, ?)
+            `)
+            .run(data.id, data.createdAt, data.errorMsg, data.targetDir);
     },
 
     getCopyLogs() {
-        const database = getDb();
-        return database
+        return getDb()
             .prepare('SELECT * FROM CopyLog ORDER BY createdAt DESC')
             .all();
     },
 
     getDeleteLogs() {
-        const database = getDb();
-        return database
+        return getDb()
             .prepare('SELECT * FROM DeleteLog ORDER BY createdAt DESC')
             .all();
     },
 
     getErrorLogs() {
-        const database = getDb();
-        return database
+        return getDb()
             .prepare('SELECT * FROM ErrorLog ORDER BY createdAt DESC')
             .all();
     },
 
-    deleteOldLogs(cutoffDate: string) {
+    deleteOldLogs(cutoffDate: string): void {
         const database = getDb();
-        const stmt1 = database.prepare(
-            'DELETE FROM CopyLog WHERE createdAt < ?'
-        );
-        const stmt2 = database.prepare(
-            'DELETE FROM DeleteLog WHERE createdAt < ?'
-        );
-        const stmt3 = database.prepare(
-            'DELETE FROM ErrorLog WHERE createdAt < ?'
-        );
-
-        stmt1.run(cutoffDate);
-        stmt2.run(cutoffDate);
-        stmt3.run(cutoffDate);
+        const remove = database.transaction((date: string) => {
+            database.prepare('DELETE FROM CopyLog WHERE createdAt < ?').run(date);
+            database.prepare('DELETE FROM DeleteLog WHERE createdAt < ?').run(date);
+            database.prepare('DELETE FROM ErrorLog WHERE createdAt < ?').run(date);
+        });
+        remove(cutoffDate);
     },
 };

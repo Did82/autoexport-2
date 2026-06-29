@@ -1,297 +1,203 @@
 import { serve } from 'bun';
 import { Cron } from 'croner';
-import { readdirSync, statSync } from 'fs';
-import { join } from 'path';
-import index from '../public/index.html';
-import { getConfig } from './libs/config';
-import { dbHelpers, initSchema } from './libs/db';
+import { existsSync } from 'node:fs';
+import index from '../src/index.html';
+import { APP_TIMEZONE, getConfig } from './libs/config';
+import { checkDatabase, dbHelpers, initSchema } from './libs/db';
 import { cleanupOldLogs } from './services/cleanup.service';
 import {
     getConfigService,
     updateConfigService,
 } from './services/config.service';
 import { copyDirectory } from './services/copy.service';
+import { spaceControlService } from './services/delete.service';
+import { enqueueFileJob } from './services/job-queue.service';
 import {
-    deleteRedundantDirectories,
-    spaceControlService,
-} from './services/delete.service';
-import { validateAndNormalizePath } from './utils/securityUtils';
+    cleanupQuarantine,
+    quarantineInvalidDirectories,
+} from './services/quarantine.service';
 import { getDateNDaysAgo, getDiskUsage } from './utils/utils';
 
-// Initialize database
-try {
-    initSchema();
-} catch (error) {
-    console.error('Failed to initialize database:', error);
+function errorResponse(error: unknown, status = 500): Response {
+    return Response.json(
+        { error: error instanceof Error ? error.message : String(error) },
+        { status }
+    );
 }
 
-// Initialize config (don't validate paths at startup)
-try {
-    getConfig();
-} catch (error) {
-    console.error('Failed to load config:', error);
-}
-
-// API Routes
-const routes = {
-    // Get config
+export const routes = {
     '/api/config': {
         GET: () => {
             try {
-                const config = getConfigService();
-                return Response.json(config);
+                return Response.json(getConfigService());
             } catch (error) {
-                return Response.json(
-                    {
-                        error:
-                            error instanceof Error
-                                ? error.message
-                                : String(error),
-                    },
-                    { status: 500 }
-                );
+                return errorResponse(error);
             }
         },
-        POST: async (req: Request) => {
+        POST: async (request: Request) => {
             try {
-                const body = await req.json();
-                const updated = updateConfigService(body);
-                return Response.json(updated);
-            } catch (error) {
+                const contentType = request.headers.get('content-type') ?? '';
+                if (!contentType.includes('application/json')) {
+                    return errorResponse(
+                        new Error('Content-Type must be application/json'),
+                        415
+                    );
+                }
+
                 return Response.json(
-                    {
-                        error:
-                            error instanceof Error
-                                ? error.message
-                                : String(error),
-                    },
-                    { status: 400 }
+                    await updateConfigService(await request.json())
                 );
+            } catch (error) {
+                return errorResponse(error, 400);
             }
         },
     },
 
-    // Get disk space usage
     '/api/space': {
         GET: async () => {
             try {
                 const config = getConfig();
-                const [srcDiskUsage, targetDiskUsage] = await Promise.all([
-                    getDiskUsage(config.src).catch((err) => ({
-                        free: 0,
-                        used: 0,
-                        total: 0,
-                        percentage: 0,
-                        oldestFolder: undefined,
-                        newestFolder: undefined,
-                        error: err instanceof Error ? err.message : String(err),
-                    })),
-                    getDiskUsage(config.dest).catch((err) => ({
-                        free: 0,
-                        used: 0,
-                        total: 0,
-                        percentage: 0,
-                        oldestFolder: undefined,
-                        newestFolder: undefined,
-                        error: err instanceof Error ? err.message : String(err),
-                    })),
-                ]);
-                return Response.json({
-                    srcDiskUsage,
-                    targetDiskUsage,
+                const emptyUsage = (error: unknown) => ({
+                    free: 0,
+                    used: 0,
+                    total: 0,
+                    percentage: 0,
+                    error: error instanceof Error ? error.message : String(error),
                 });
+                const [srcDiskUsage, targetDiskUsage] = await Promise.all([
+                    getDiskUsage(config.src).catch(emptyUsage),
+                    getDiskUsage(config.dest).catch(emptyUsage),
+                ]);
+
+                return Response.json({ srcDiskUsage, targetDiskUsage });
             } catch (error) {
-                return Response.json(
-                    {
-                        error:
-                            error instanceof Error
-                                ? error.message
-                                : String(error),
-                    },
-                    { status: 500 }
-                );
+                return errorResponse(error);
             }
         },
     },
 
-    // Get copy logs
     '/api/copy': {
         GET: () => {
             try {
-                const logs = dbHelpers.getCopyLogs();
-                return Response.json(logs);
+                return Response.json(dbHelpers.getCopyLogs());
             } catch (error) {
-                return Response.json(
-                    {
-                        error:
-                            error instanceof Error
-                                ? error.message
-                                : String(error),
-                    },
-                    { status: 500 }
-                );
+                return errorResponse(error);
             }
         },
     },
 
-    // Get delete logs
     '/api/delete': {
         GET: () => {
             try {
-                const logs = dbHelpers.getDeleteLogs();
-                return Response.json(logs);
+                return Response.json(dbHelpers.getDeleteLogs());
             } catch (error) {
-                return Response.json(
-                    {
-                        error:
-                            error instanceof Error
-                                ? error.message
-                                : String(error),
-                    },
-                    { status: 500 }
-                );
+                return errorResponse(error);
             }
         },
     },
 
-    // Get error logs
     '/api/errors': {
         GET: () => {
             try {
-                const logs = dbHelpers.getErrorLogs();
-                return Response.json(logs);
+                return Response.json(dbHelpers.getErrorLogs());
             } catch (error) {
-                return Response.json(
-                    {
-                        error:
-                            error instanceof Error
-                                ? error.message
-                                : String(error),
-                    },
-                    { status: 500 }
-                );
+                return errorResponse(error);
             }
         },
     },
 
-    // Get directories
-    '/api/dirs': {
-        GET: async (req: Request) => {
+    '/api/health': {
+        GET: () => {
             try {
-                const url = new URL(req.url);
-                const pathParam = url.searchParams.get('path');
+                const config = getConfig();
+                const checks = {
+                    database: checkDatabase() ? 'ok' : 'error',
+                    src: existsSync(config.src) ? 'ok' : 'unavailable',
+                    dest: existsSync(config.dest) ? 'ok' : 'unavailable',
+                };
+                const status =
+                    checks.database === 'ok' &&
+                    checks.src === 'ok' &&
+                    checks.dest === 'ok'
+                        ? 'ok'
+                        : 'degraded';
 
-                if (!pathParam) {
-                    return Response.json(
-                        { error: 'path parameter is required' },
-                        { status: 400 }
-                    );
-                }
-
-                // Validate path (must be absolute and exist)
-                const path = validateAndNormalizePath(pathParam);
-
-                // Read directories
-                const dirs = readdirSync(path)
-                    .filter((dir) => {
-                        const fullPath = join(path, dir);
-                        return statSync(fullPath).isDirectory();
-                    })
-                    .sort();
-
-                return Response.json(dirs);
+                return Response.json({ status, checks });
             } catch (error) {
-                return Response.json(
-                    {
-                        error:
-                            error instanceof Error
-                                ? error.message
-                                : String(error),
-                    },
-                    { status: 400 }
-                );
+                return errorResponse(error, 503);
             }
         },
     },
 };
 
-// Cron jobs
-const setupCronJobs = () => {
-    // Every 3 minutes for testing: copy current day
-    // new Cron('*/3 * * * *', () => {
-    //     const today = getDateNDaysAgo(0);
-    //     copyDirectory(today).catch((error) => {
-    //         console.error(`Error copying ${today}:`, error);
-    //     });
-    // });
-    // Every hour: copy current day
-    new Cron('0 * * * *', () => {
-        const today = getDateNDaysAgo(0);
-        copyDirectory(today).catch((error) => {
-            console.error(`Error copying ${today}:`, error);
-        });
+function scheduled(name: string, task: () => Promise<void>): void {
+    enqueueFileJob(name, task).catch(() => undefined);
+}
+
+export function setupCronJobs(): Cron[] {
+    const options = { timezone: APP_TIMEZONE };
+
+    return [
+        new Cron('0 * * * *', options, () => {
+            const today = getDateNDaysAgo(0);
+            scheduled(`copy-current-${today}`, () => copyDirectory(today));
+        }),
+        new Cron('0 22 * * *', options, () => {
+            const yesterday = getDateNDaysAgo(1);
+            scheduled(`copy-yesterday-${yesterday}`, () =>
+                copyDirectory(yesterday)
+            );
+        }),
+        new Cron('0 3 * * *', options, () => {
+            scheduled('space-control-src', async () => {
+                const config = getConfig();
+                await spaceControlService('src', config.srcLimit);
+            });
+        }),
+        new Cron('0 4 * * *', options, () => {
+            scheduled('space-control-dest', async () => {
+                const config = getConfig();
+                await spaceControlService('dest', config.destLimit);
+            });
+        }),
+        new Cron('0 5 * * *', options, () => {
+            cleanupOldLogs().catch((error) =>
+                console.error('[job:error] cleanup-logs', error)
+            );
+        }),
+        new Cron('0 6 * * *', options, () => {
+            scheduled('quarantine-maintenance', async () => {
+                await quarantineInvalidDirectories('src');
+                await quarantineInvalidDirectories('dest');
+                await cleanupQuarantine('src');
+                await cleanupQuarantine('dest');
+            });
+        }),
+    ];
+}
+
+export function startServer(port = Number(process.env.PORT || 3001)) {
+    return serve({
+        port,
+        routes: {
+            ...routes,
+            '/api/*': () =>
+                Response.json({ error: 'API endpoint not found' }, { status: 404 }),
+            '/*': index,
+        },
+        development:
+            process.env.NODE_ENV !== 'production'
+                ? { hmr: true, console: true }
+                : false,
     });
+}
 
-    // Every day at 22:00: copy yesterday
-    new Cron('0 22 * * *', () => {
-        const yesterday = getDateNDaysAgo(1);
-        copyDirectory(yesterday).catch((error) => {
-            console.error(`Error copying ${yesterday}:`, error);
-        });
-    });
-
-    // Every day at 03:00 (Europe/Moscow): control source disk space
-    new Cron('0 3 * * *', { timezone: 'Europe/Moscow' }, () => {
-        const config = getConfig();
-        spaceControlService('src', config.limit).catch((error) => {
-            console.error('Error controlling source disk space:', error);
-        });
-    });
-
-    // Every day at 04:00: control destination disk space
-    new Cron('0 4 * * *', () => {
-        const config = getConfig();
-        spaceControlService('dest', config.limit).catch((error) => {
-            console.error('Error controlling destination disk space:', error);
-        });
-    });
-
-    // Every day at 05:00: cleanup old logs
-    new Cron('0 5 * * *', () => {
-        cleanupOldLogs().catch((error) => {
-            console.error('Error cleaning up logs:', error);
-        });
-    });
-
-    // Every day at 06:00: delete redundant directories
-    new Cron('0 6 * * *', () => {
-        Promise.all([
-            deleteRedundantDirectories('src'),
-            deleteRedundantDirectories('dest'),
-        ]).catch((error) => {
-            console.error('Error deleting redundant directories:', error);
-        });
-    });
-};
-
-// Setup cron jobs
-setupCronJobs();
-
-// Start server
-const server = serve({
-    port: parseInt(process.env.PORT || '3001', 10),
-    routes: {
-        // API routes first
-        ...routes,
-        // Health check (after API routes)
-        '/api/health': () => Response.json({ status: 'ok' }),
-        // SPA fallback - must be last
-        '/*': index,
-    },
-    development: process.env.NODE_ENV !== 'production' && {
-        hmr: true,
-        console: true,
-    },
-});
-
-console.log(`🚀 AutoExport server running at ${server.url}`);
+if (import.meta.main) {
+    initSchema();
+    getConfig();
+    setupCronJobs();
+    const server = startServer();
+    console.log(
+        `AutoExport running at ${server.url} (timezone: ${APP_TIMEZONE})`
+    );
+}

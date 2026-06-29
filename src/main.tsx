@@ -11,7 +11,11 @@ import 'react-day-picker/dist/style.css';
 
 // Initialize theme before rendering
 const initTheme = () => {
-    const stored = localStorage.getItem('theme') || 'system';
+    const candidate = localStorage.getItem('theme');
+    const stored =
+        candidate === 'light' || candidate === 'dark' || candidate === 'system'
+            ? candidate
+            : 'system';
     const root = document.documentElement;
     root.classList.remove('light', 'dark');
     
@@ -40,4 +44,3 @@ if (import.meta.hot) {
     // The hot module reloading API is not available in production.
     createRoot(elem).render(app);
 }
-

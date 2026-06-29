@@ -9,6 +9,7 @@ bun.lockb
 
 # Конфигурация (будет монтироваться через volume)
 config.json
+data
 
 # Git
 .git
@@ -43,4 +44,3 @@ README.md
 Dockerfile
 docker-compose.yml
 .dockerignore
-

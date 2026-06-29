@@ -1,54 +1,47 @@
-import { getConfig, updateConfig, type Config } from '../libs/config';
-import { validateAndNormalizePath } from '../utils/securityUtils';
+import {
+    CONFIG_SCHEMA_VERSION,
+    getConfig,
+    normalizeConfig,
+    updateConfig,
+    type Config,
+} from '../libs/config';
+import { validateManagedRoots } from '../utils/securityUtils';
+
+const ALLOWED_FIELDS = new Set([
+    'schemaVersion',
+    'src',
+    'dest',
+    'srcLimit',
+    'destLimit',
+    'cleanupDays',
+    'quarantineDays',
+]);
 
 export function getConfigService(): Config {
     return getConfig();
 }
 
-function validatePath(path: string, fieldName: string): string {
-    const trimmed = path.trim();
-    if (!trimmed) {
-        throw new Error(`${fieldName} не может быть пустой`);
+export async function updateConfigService(input: unknown): Promise<Config> {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) {
+        throw new Error('Request body must be a JSON object');
     }
 
-    const normalized = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
-
-    if (!normalized.startsWith('/')) {
-        throw new Error('Путь должен быть абсолютным (начинаться с /)');
-    }
-
-    // Try to validate if path exists, but allow non-existent paths
-    try {
-        return validateAndNormalizePath(normalized);
-    } catch {
-        // Path doesn't exist, but that's OK for initial setup
-        return normalized;
-    }
-}
-
-export function updateConfigService(newConfig: Partial<Config>): Config {
-    // Validate and normalize paths if provided
-    if (newConfig.src !== undefined) {
-        newConfig.src = validatePath(newConfig.src, 'Исходная директория');
-    }
-
-    if (newConfig.dest !== undefined) {
-        newConfig.dest = validatePath(newConfig.dest, 'Целевая директория');
-    }
-
-    // Validate limit
-    if (newConfig.limit !== undefined) {
-        if (newConfig.limit < 0 || newConfig.limit > 100) {
-            throw new Error('Limit must be between 0 and 100');
+    const patch = input as Record<string, unknown>;
+    for (const key of Object.keys(patch)) {
+        if (!ALLOWED_FIELDS.has(key)) {
+            throw new Error(`Unknown config field: ${key}`);
         }
     }
 
-    // Validate cleanupDays
-    if (newConfig.cleanupDays !== undefined) {
-        if (newConfig.cleanupDays < 0 || newConfig.cleanupDays > 365) {
-            throw new Error('cleanupDays must be between 0 and 365');
-        }
+    if (
+        patch.schemaVersion !== undefined &&
+        patch.schemaVersion !== CONFIG_SCHEMA_VERSION
+    ) {
+        throw new Error(`schemaVersion must be ${CONFIG_SCHEMA_VERSION}`);
     }
 
-    return updateConfig(newConfig);
+    const merged = normalizeConfig({ ...getConfig(), ...patch });
+    const paths = validateManagedRoots(merged.src, merged.dest);
+
+    return updateConfig({ ...merged, ...paths });
 }

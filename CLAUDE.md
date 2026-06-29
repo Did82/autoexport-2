@@ -86,9 +86,8 @@ docker-compose up -d --build
 | `/api/config` | POST | Update configuration |
 | `/api/space` | GET | Get disk usage for src/dest |
 | `/api/copy` | GET | Get copy operation logs |
-| `/api/delete` | GET | Get delete operation logs |
+| `/api/delete` | GET | Get maintenance and quarantine logs |
 | `/api/errors` | GET | Get error logs |
-| `/api/dirs` | GET | List directories in path |
 | `/api/health` | GET | Health check |
 
 ## Environment Variables
@@ -97,8 +96,13 @@ docker-compose up -d --build
 |----------|---------|---------|
 | `SRC_PATH` | `/tmp/src` | Source directory for copying |
 | `DEST_PATH` | `/tmp/dest` | Destination directory |
-| `DISK_LIMIT` | `78` | Disk usage threshold (%) |
+| `SRC_DISK_LIMIT` | `78` | Source disk usage threshold (%) |
+| `DEST_DISK_LIMIT` | `78` | Destination disk usage threshold (%) |
 | `CLEANUP_DAYS` | `90` | Logs retention period (days) |
+| `QUARANTINE_DAYS` | `7` | Invalid directory quarantine retention |
+| `APP_TIMEZONE` | `Europe/Minsk` | Timezone for every cron job |
+| `CONFIG_PATH` | `./config.json` | Config file location |
+| `DATABASE_PATH` | `./autoexport.db` | SQLite file location |
 | `NODE_ENV` | `production` | Environment mode |
 | `PORT` | `3001` | Server port |
 
@@ -172,7 +176,7 @@ All tables have indexes on `createdAt` for query performance.
 | `0 3 * * *` | Source disk space control | Delete oldest dirs if over limit |
 | `0 4 * * *` | Destination disk space control | Same for target |
 | `0 5 * * *` | Cleanup old logs | Delete logs older than cleanupDays |
-| `0 6 * * *` | Delete redundant directories | Remove non-YYYYMMDD dirs |
+| `0 6 * * *` | Quarantine maintenance | Move invalid dirs and purge expired quarantine |
 
 ## Important Patterns
 
@@ -219,13 +223,14 @@ export async function performAction() {
 
 - **Path Validation:** All paths must be absolute and exist as directories
 - **No directory traversal:** `validateAndNormalizePath()` prevents `../` attacks
-- **rsync:** Uses `--delete` flag - be careful with source/destination paths
+- **rsync:** Does not use `--delete`; source deletion requires a final sync and dry-run verification
+- **Deletion:** Never delete today's directory; use `deleteDir(root, candidate)` for containment checks
 - **Config updates:** Validated before persisting
 
 ## Docker Deployment Notes
 
-- Build: `docker-compose up -d --build`
-- Volumes persist config.json, database, and WAL files
+- Build: `docker compose up -d --build`
+- The `./data` bind mount persists config, database, and WAL files
 - Health check available at `/api/health`
 - Mount network shares before starting (see `mount-network.sh`)
 - Default port: 3001 (configurable via PORT env var)
@@ -236,11 +241,11 @@ export async function performAction() {
 2. Access dashboard at `http://localhost:3001`
 3. Check `/api/health` for server status
 4. Monitor console for cron job logs
-5. Check database tables for operation logs
+5. Run `bun run check` before deployment
 
 ## Common Issues
 
 - **rsync not found:** Install rsync (`apt-get install rsync`)
 - **Permission denied:** Check mount permissions for src/dest paths
-- **Database locked:** Ensure WAL files are properly mounted in Docker
-- **Cron jobs not running:** Check timezone settings (Moscow TZ for disk control)
+- **Database locked:** Ensure the `./data` directory is writable
+- **Cron jobs not running:** Check `APP_TIMEZONE` (default: Europe/Minsk)

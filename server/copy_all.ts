@@ -5,7 +5,7 @@ import { join } from 'path';
 import { getConfig } from './libs/config';
 import { copyDirectory } from './services/copy.service';
 import { validateAndNormalizePath } from './utils/securityUtils';
-import { humanizeTime } from './utils/utils';
+import { humanizeTime, isValidDateDirectory } from './utils/utils';
 
 // Simple spinner implementation
 class Spinner {
@@ -55,7 +55,7 @@ async function copyAll() {
     const dirs = readdirSync(srcPath)
         .filter((dir) => {
             const fullPath = join(srcPath, dir);
-            return statSync(fullPath).isDirectory() && /^\d{8}$/.test(dir);
+            return statSync(fullPath).isDirectory() && isValidDateDirectory(dir);
         })
         .sort();
 

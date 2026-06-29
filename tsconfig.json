@@ -10,6 +10,7 @@
 
     // Bundler mode
     "moduleResolution": "bundler",
+    "types": ["bun"],
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
     "noEmit": true,
@@ -21,7 +22,6 @@
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
 
-    "baseUrl": ".",
     "paths": {
       "@/*": ["./src/*"]
     },

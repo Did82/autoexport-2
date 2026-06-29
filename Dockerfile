@@ -1,34 +1,33 @@
-# Используем официальный образ Bun
-FROM oven/bun:debian
+FROM oven/bun:1.3.14-debian AS build
 
-# Устанавливаем rsync (требуется для копирования файлов)
-RUN apt-get update && \
-    apt-get install -y rsync && \
-    rm -rf /var/lib/apt/lists/*
-
-# Устанавливаем рабочую директорию
 WORKDIR /app
-
-# Копируем файлы зависимостей
-COPY package.json bun.lock* ./
-
-# Устанавливаем зависимости
+COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile
-
-# Копируем весь проект
 COPY . .
+RUN bun run build
 
-# Открываем порт
+FROM oven/bun:1.3.14-debian AS runtime
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends rsync \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY --from=build /app/dist ./dist
+
+ENV NODE_ENV=production \
+    PORT=3001 \
+    APP_TIMEZONE=Europe/Minsk \
+    CONFIG_PATH=/app/data/config.json \
+    DATABASE_PATH=/app/data/autoexport.db
+
+RUN mkdir -p /app/data
+
+WORKDIR /app/dist
+
 EXPOSE 3001
 
-# Переменные окружения по умолчанию
-ENV NODE_ENV=production
-ENV PORT=3001
-
-# Healthcheck
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD bun -e "fetch('http://localhost:3001/api/health').then(r => r.ok ? process.exit(0) : process.exit(1)).catch(() => process.exit(1))"
 
-# Запускаем приложение
-CMD ["bun", "run", "start"]
-
+CMD ["bun", "index.js"]
