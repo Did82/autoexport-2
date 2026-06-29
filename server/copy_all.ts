@@ -149,7 +149,7 @@ process.on('SIGTERM', () => {
 });
 
 // Run
-runTrackedFileJob('copy-all', copyAll).catch((error) => {
+runTrackedFileJob('copy-all', copyAll, { trigger: 'cli' }).catch((error) => {
     console.error('Fatal error:', error);
     if (!process.exitCode) process.exitCode = 1;
 });

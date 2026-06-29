@@ -58,16 +58,57 @@ export type JobStatus =
     | 'failed'
     | 'interrupted';
 
+export type JobTrigger =
+    | 'cron'
+    | 'manual'
+    | 'cli'
+    | 'system'
+    | 'unknown';
+
 export interface JobRun {
     id: string;
     name: string;
     status: JobStatus;
+    trigger: JobTrigger;
+    scheduleId: string | null;
     queuedAt: string;
     startedAt: string | null;
     finishedAt: string | null;
     heartbeatAt: string | null;
     error: string | null;
+    totalItems: number | null;
+    processedItems: number | null;
+    successfulItems: number | null;
+    failedItems: number | null;
+    currentItem: string | null;
     stale: boolean;
+}
+
+export interface SourceDirectoriesResponse {
+    directories: string[];
+}
+
+export interface ScheduleLatestRun {
+    id: string;
+    status: JobStatus;
+    queuedAt: string;
+    startedAt: string | null;
+    finishedAt: string | null;
+}
+
+export interface ScheduleTask {
+    id: string;
+    name: string;
+    description: string;
+    cronExpression: string;
+    scheduleLabel: string;
+    nextRun: string | null;
+    latestRun: ScheduleLatestRun | null;
+}
+
+export interface ScheduleSnapshot {
+    timezone: string;
+    tasks: ScheduleTask[];
 }
 
 export interface MountStatus {

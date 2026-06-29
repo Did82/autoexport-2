@@ -6,7 +6,10 @@ import { getConfig } from '../libs/config';
 import { isValidDateDirectory } from '../utils/utils';
 import { assertMountReady } from './mount.service';
 
-export async function copyDirectory(dirName: string): Promise<void> {
+export async function copyDirectory(
+    dirName: string,
+    options: { requireExisting?: boolean } = {}
+): Promise<void> {
     if (!isValidDateDirectory(dirName)) {
         throw new Error(`Invalid directory name: ${dirName}`);
     }
@@ -18,20 +21,22 @@ export async function copyDirectory(dirName: string): Promise<void> {
     const srcPath = join(config.src, dirName);
     const destPath = join(config.dest, dirName);
     
-    // Check if source directory exists
-    if (!existsSync(srcPath)) {
-        // Directory doesn't exist - exit without error
-        return;
-    }
-    
-    // Check if it's a directory
-    const stat = statSync(srcPath);
-    if (!stat.isDirectory()) {
-        // Not a directory - exit
-        return;
-    }
-    
     try {
+        if (!existsSync(srcPath)) {
+            if (options.requireExisting) {
+                throw new Error(`Source directory does not exist: ${srcPath}`);
+            }
+            return;
+        }
+
+        const stat = statSync(srcPath);
+        if (!stat.isDirectory()) {
+            if (options.requireExisting) {
+                throw new Error(`Source path is not a directory: ${srcPath}`);
+            }
+            return;
+        }
+
         const result = await copyFiles({
             src: srcPath,
             dest: destPath,

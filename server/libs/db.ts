@@ -15,16 +15,24 @@ export type JobStatus =
     | 'success'
     | 'failed'
     | 'interrupted';
+export type JobTrigger = 'cron' | 'manual' | 'cli' | 'system' | 'unknown';
 
 export interface JobRun {
     id: string;
     name: string;
     status: JobStatus;
+    trigger: JobTrigger;
+    scheduleId: string | null;
     queuedAt: string;
     startedAt: string | null;
     finishedAt: string | null;
     heartbeatAt: string | null;
     error: string | null;
+    totalItems: number | null;
+    processedItems: number | null;
+    successfulItems: number | null;
+    failedItems: number | null;
+    currentItem: string | null;
 }
 
 export interface MountIdentity {
@@ -92,11 +100,18 @@ function configureDatabase(database: Database): void {
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
             status TEXT NOT NULL,
+            trigger TEXT NOT NULL DEFAULT 'unknown',
+            scheduleId TEXT,
             queuedAt TEXT NOT NULL,
             startedAt TEXT,
             finishedAt TEXT,
             heartbeatAt TEXT,
-            error TEXT
+            error TEXT,
+            totalItems INTEGER,
+            processedItems INTEGER,
+            successfulItems INTEGER,
+            failedItems INTEGER,
+            currentItem TEXT
         )
     `);
     database.run(`
@@ -130,6 +145,18 @@ function configureDatabase(database: Database): void {
         "TEXT NOT NULL DEFAULT 'unknown'"
     );
     ensureColumn(database, 'DeleteLog', 'message', 'TEXT');
+    ensureColumn(
+        database,
+        'JobRun',
+        'trigger',
+        "TEXT NOT NULL DEFAULT 'unknown'"
+    );
+    ensureColumn(database, 'JobRun', 'scheduleId', 'TEXT');
+    ensureColumn(database, 'JobRun', 'totalItems', 'INTEGER');
+    ensureColumn(database, 'JobRun', 'processedItems', 'INTEGER');
+    ensureColumn(database, 'JobRun', 'successfulItems', 'INTEGER');
+    ensureColumn(database, 'JobRun', 'failedItems', 'INTEGER');
+    ensureColumn(database, 'JobRun', 'currentItem', 'TEXT');
 
     database.run(
         'CREATE INDEX IF NOT EXISTS idx_copy_created ON CopyLog(createdAt)'
@@ -145,6 +172,9 @@ function configureDatabase(database: Database): void {
     );
     database.run(
         'CREATE INDEX IF NOT EXISTS idx_job_status ON JobRun(status)'
+    );
+    database.run(
+        'CREATE INDEX IF NOT EXISTS idx_job_schedule ON JobRun(scheduleId, queuedAt)'
     );
 }
 
@@ -251,13 +281,32 @@ export const dbHelpers = {
             .all();
     },
 
-    createJobRun(data: { id: string; name: string; queuedAt: string }): void {
+    createJobRun(data: {
+        id: string;
+        name: string;
+        queuedAt: string;
+        trigger?: JobTrigger;
+        scheduleId?: string;
+        totalItems?: number;
+    }): void {
         getDb()
             .prepare(`
-                INSERT INTO JobRun (id, name, status, queuedAt)
-                VALUES (?, ?, 'queued', ?)
+                INSERT INTO JobRun
+                    (id, name, status, trigger, scheduleId, queuedAt,
+                     totalItems, processedItems, successfulItems, failedItems)
+                VALUES (?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?)
             `)
-            .run(data.id, data.name, data.queuedAt);
+            .run(
+                data.id,
+                data.name,
+                data.trigger ?? 'unknown',
+                data.scheduleId ?? null,
+                data.queuedAt,
+                data.totalItems ?? null,
+                data.totalItems === undefined ? null : 0,
+                data.totalItems === undefined ? null : 0,
+                data.totalItems === undefined ? null : 0
+            );
     },
 
     markJobRunning(id: string, timestamp: string): void {
@@ -277,6 +326,31 @@ export const dbHelpers = {
                 WHERE id = ? AND status = 'running'
             `)
             .run(timestamp, id);
+    },
+
+    updateJobProgress(
+        id: string,
+        progress: {
+            processedItems: number;
+            successfulItems: number;
+            failedItems: number;
+            currentItem: string | null;
+        }
+    ): void {
+        getDb()
+            .prepare(`
+                UPDATE JobRun
+                SET processedItems = ?, successfulItems = ?,
+                    failedItems = ?, currentItem = ?
+                WHERE id = ?
+            `)
+            .run(
+                progress.processedItems,
+                progress.successfulItems,
+                progress.failedItems,
+                progress.currentItem,
+                id
+            );
     },
 
     finishJob(
@@ -299,6 +373,17 @@ export const dbHelpers = {
         return getDb()
             .prepare('SELECT * FROM JobRun ORDER BY queuedAt DESC LIMIT ?')
             .all(safeLimit) as JobRun[];
+    },
+
+    getLatestScheduleJob(scheduleId: string): JobRun | null {
+        return (getDb()
+            .prepare(`
+                SELECT * FROM JobRun
+                WHERE trigger = 'cron' AND scheduleId = ?
+                ORDER BY queuedAt DESC
+                LIMIT 1
+            `)
+            .get(scheduleId) ?? null) as JobRun | null;
     },
 
     markAbandonedJobs(cutoff: string, timestamp: string): number {

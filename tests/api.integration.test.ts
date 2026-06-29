@@ -161,6 +161,146 @@ describe('configuration API', () => {
         expect(Array.isArray(await response.json())).toBe(true);
     });
 
+    test('lists only real dated source directories in chronological order', async () => {
+        await Promise.all([
+            mkdir(join(srcPath, '20260101')),
+            mkdir(join(srcPath, '20260102')),
+            mkdir(join(srcPath, '20260103')),
+            mkdir(join(srcPath, 'manual-notes')),
+        ]);
+
+        const response = await fetch(`${baseUrl}/api/source-directories`);
+        const body = (await response.json()) as { directories: string[] };
+
+        expect(response.status).toBe(200);
+        expect(body.directories).toEqual([
+            '20260101',
+            '20260102',
+            '20260103',
+        ]);
+    });
+
+    test('returns all registered schedules with timezone and next run', async () => {
+        const response = await fetch(`${baseUrl}/api/schedules`);
+        const body = (await response.json()) as {
+            timezone: string;
+            tasks: Array<{
+                id: string;
+                cronExpression: string;
+                nextRun: string | null;
+            }>;
+        };
+
+        expect(response.status).toBe(200);
+        expect(body.timezone).toBe('Europe/Minsk');
+        expect(body.tasks.map((task) => task.id)).toEqual([
+            'copy-current',
+            'copy-yesterday',
+            'space-control-src',
+            'space-control-dest',
+            'cleanup-logs',
+            'quarantine-maintenance',
+        ]);
+        expect(body.tasks.every((task) => Boolean(task.cronExpression))).toBe(
+            true
+        );
+        expect(
+            body.tasks.every(
+                (task) =>
+                    task.nextRun !== null &&
+                    Date.parse(task.nextRun) > Date.now()
+            )
+        ).toBe(true);
+    });
+
+    test('copies a manual batch, continues after an item failure, and stores progress', async () => {
+        await Promise.all([
+            writeFile(join(srcPath, '20260101', 'first.txt'), 'first'),
+            writeFile(join(srcPath, '20260102', 'second.txt'), 'second'),
+            writeFile(join(srcPath, '20260103', 'third.txt'), 'third'),
+        ]);
+        await writeFile(join(destPath, '20260102'), 'blocks directory creation');
+
+        const response = await fetch(`${baseUrl}/api/jobs/copy-directories`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                directories: [
+                    '20260103',
+                    '20260101',
+                    '20260102',
+                    '20260101',
+                ],
+            }),
+        });
+        const accepted = (await response.json()) as {
+            jobId: string;
+            directoryCount: number;
+        };
+
+        expect(response.status).toBe(202);
+        expect(accepted.directoryCount).toBe(3);
+
+        let completedJob:
+            | {
+                  id: string;
+                  status: string;
+                  trigger: string;
+                  totalItems: number;
+                  processedItems: number;
+                  successfulItems: number;
+                  failedItems: number;
+                  currentItem: string | null;
+              }
+            | undefined;
+        for (let attempt = 0; attempt < 100; attempt += 1) {
+            const jobs = (await (
+                await fetch(`${baseUrl}/api/jobs`)
+            ).json()) as Array<NonNullable<typeof completedJob>>;
+            completedJob = jobs.find((job) => job.id === accepted.jobId);
+            if (
+                completedJob?.status === 'failed' ||
+                completedJob?.status === 'success'
+            ) {
+                break;
+            }
+            await Bun.sleep(20);
+        }
+
+        expect(completedJob?.status).toBe('failed');
+        expect(completedJob?.trigger).toBe('manual');
+        expect(completedJob?.totalItems).toBe(3);
+        expect(completedJob?.processedItems).toBe(3);
+        expect(completedJob?.successfulItems).toBe(2);
+        expect(completedJob?.failedItems).toBe(1);
+        expect(completedJob?.currentItem).toBeNull();
+        expect(await Bun.file(join(destPath, '20260103', 'third.txt')).text()).toBe(
+            'third'
+        );
+    });
+
+    test('rejects invalid or missing manual copy directories', async () => {
+        const invalid = await fetch(`${baseUrl}/api/jobs/copy-directories`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ directories: ['20260230'] }),
+        });
+        const missing = await fetch(`${baseUrl}/api/jobs/copy-directories`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ directories: ['20260104'] }),
+        });
+        const empty = await fetch(`${baseUrl}/api/jobs/copy-directories`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ directories: [] }),
+        });
+
+        expect(invalid.status).toBe(400);
+        expect(missing.status).toBe(400);
+        expect(empty.status).toBe(400);
+    });
+
     test('queues a manual synchronization for the current day', async () => {
         const response = await fetch(`${baseUrl}/api/jobs/copy-today`, {
             method: 'POST',

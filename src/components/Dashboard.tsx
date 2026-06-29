@@ -12,6 +12,7 @@ import type {
     ErrorLog,
     JobRun,
     MountStatus,
+    ScheduleSnapshot,
 } from '@/types';
 import { fetchAPI } from '@/utils/api';
 import { AlertCircleIcon } from 'lucide-react';
@@ -31,7 +32,7 @@ interface SpaceData {
     targetDiskUsage: DiskUsage;
 }
 
-const STATUS_REFRESH_MS = 15_000;
+const STATUS_REFRESH_MS = 5_000;
 const LOG_REFRESH_MS = 30_000;
 
 function isAbortError(error: unknown): boolean {
@@ -50,6 +51,7 @@ export function Dashboard({ configRevision }: DashboardProps) {
     const [errorLogs, setErrorLogs] = useState<ErrorLog[]>([]);
     const [jobs, setJobs] = useState<JobRun[]>([]);
     const [mounts, setMounts] = useState<MountStatus[]>([]);
+    const [schedule, setSchedule] = useState<ScheduleSnapshot | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [autoRefresh, setAutoRefresh] = useState(false);
@@ -76,15 +78,17 @@ export function Dashboard({ configRevision }: DashboardProps) {
     }, []);
 
     const loadOperationalData = useCallback(async (signal?: AbortSignal) => {
-        const [space, jobRuns, mountStatuses] = await Promise.all([
+        const [space, jobRuns, mountStatuses, scheduleSnapshot] = await Promise.all([
             fetchAPI<SpaceData>('/api/space', { signal }),
             fetchAPI<JobRun[]>('/api/jobs', { signal }),
             fetchAPI<MountStatus[]>('/api/mounts', { signal }),
+            fetchAPI<ScheduleSnapshot>('/api/schedules', { signal }),
         ]);
         if (signal?.aborted) return;
         setSpaceData(space);
         setJobs(jobRuns);
         setMounts(mountStatuses);
+        setSchedule(scheduleSnapshot);
     }, []);
 
     useEffect(() => {
@@ -213,6 +217,7 @@ export function Dashboard({ configRevision }: DashboardProps) {
             <AutomationStatusCard
                 jobs={jobs}
                 mounts={mounts}
+                schedule={schedule}
                 onJobQueued={handleJobQueued}
             />
 

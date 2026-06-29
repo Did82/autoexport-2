@@ -133,4 +133,124 @@ describe('persistent file job queue', () => {
         );
         await expectSuccess(afterRelease);
     });
+
+    test('coalesces matching handles and stores batch progress metadata', async () => {
+        const environment = await createEnvironment();
+        const processHandle = spawnScript(
+            `
+                const { enqueueFileJobWithHandle } = await import(${JSON.stringify(queueModuleUrl)});
+                let executions = 0;
+                const task = async (context) => {
+                    executions += 1;
+                    context.updateProgress({
+                        processedItems: 1,
+                        successfulItems: 1,
+                        failedItems: 0,
+                        currentItem: '20260102',
+                    });
+                    await Bun.sleep(50);
+                    context.updateProgress({
+                        processedItems: 2,
+                        successfulItems: 2,
+                        failedItems: 0,
+                        currentItem: null,
+                    });
+                };
+                const first = enqueueFileJobWithHandle('manual batch', task, {
+                    dedupeKey: 'same-selection',
+                    trigger: 'manual',
+                    totalItems: 2,
+                });
+                const second = enqueueFileJobWithHandle('manual batch', task, {
+                    dedupeKey: 'same-selection',
+                    trigger: 'manual',
+                    totalItems: 2,
+                });
+                if (!second.coalesced || first.id !== second.id) {
+                    throw new Error('matching job was not coalesced');
+                }
+                await Promise.all([first.promise, second.promise]);
+                if (executions !== 1) throw new Error('batch executed twice');
+            `,
+            environment.databasePath
+        );
+        await expectSuccess(processHandle);
+
+        const database = new Database(environment.databasePath);
+        const job = database
+            .query(`
+                SELECT status, trigger, totalItems, processedItems,
+                       successfulItems, failedItems, currentItem
+                FROM JobRun
+            `)
+            .get() as Record<string, unknown>;
+        database.close();
+
+        expect(job).toEqual({
+            status: 'success',
+            trigger: 'manual',
+            totalItems: 2,
+            processedItems: 2,
+            successfulItems: 2,
+            failedItems: 0,
+            currentItem: null,
+        });
+    });
+
+    test('migrates legacy JobRun rows without losing history', async () => {
+        const environment = await createEnvironment();
+        const legacyDatabase = new Database(environment.databasePath, {
+            create: true,
+        });
+        legacyDatabase.run(`
+            CREATE TABLE JobRun (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                status TEXT NOT NULL,
+                queuedAt TEXT NOT NULL,
+                startedAt TEXT,
+                finishedAt TEXT,
+                heartbeatAt TEXT,
+                error TEXT
+            )
+        `);
+        legacyDatabase
+            .prepare(`
+                INSERT INTO JobRun (id, name, status, queuedAt)
+                VALUES ('legacy', 'old-job', 'success', '2025-01-01T00:00:00.000Z')
+            `)
+            .run();
+        legacyDatabase.close();
+
+        const processHandle = spawnScript(
+            `
+                const { getDb } = await import(${JSON.stringify(databaseModuleUrl)});
+                getDb();
+            `,
+            environment.databasePath
+        );
+        await expectSuccess(processHandle);
+
+        const database = new Database(environment.databasePath);
+        const columns = database
+            .query('PRAGMA table_info(JobRun)')
+            .all() as Array<{ name: string }>;
+        const job = database
+            .query(`
+                SELECT id, name, trigger, totalItems, processedItems
+                FROM JobRun WHERE id = 'legacy'
+            `)
+            .get() as Record<string, unknown>;
+        database.close();
+
+        expect(columns.map((column) => column.name)).toContain('scheduleId');
+        expect(columns.map((column) => column.name)).toContain('currentItem');
+        expect(job).toEqual({
+            id: 'legacy',
+            name: 'old-job',
+            trigger: 'unknown',
+            totalItems: null,
+            processedItems: null,
+        });
+    });
 });

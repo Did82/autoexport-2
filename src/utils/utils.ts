@@ -22,6 +22,26 @@ export function formatDate(date: string): string {
     return format(new Date(date), 'dd.MM.yyyy HH:mm:ss');
 }
 
+export function formatDateInTimeZone(date: string, timeZone: string): string {
+    return new Intl.DateTimeFormat('ru-RU', {
+        timeZone,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false,
+    })
+        .format(new Date(date))
+        .replace(',', '');
+}
+
+export function formatDirectoryDate(directory: string): string {
+    if (!/^\d{8}$/.test(directory)) return directory;
+    return `${directory.slice(6, 8)}.${directory.slice(4, 6)}.${directory.slice(0, 4)}`;
+}
+
 export function humanizeTime(ms: number): string {
     if (ms < 1000) {
         return `${ms}ms`;

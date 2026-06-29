@@ -1,22 +1,23 @@
 import { serve } from 'bun';
-import { Cron } from 'croner';
 import index from '../src/index.html';
 import { APP_TIMEZONE, getConfig } from './libs/config';
 import { isRsyncAvailable } from './libs/copy';
 import { checkDatabase, dbHelpers, initSchema } from './libs/db';
-import { cleanupOldLogs } from './services/cleanup.service';
 import {
     getConfigService,
     persistConfigService,
     prepareConfigUpdate,
 } from './services/config.service';
 import { copyDirectory } from './services/copy.service';
-import { spaceControlService } from './services/delete.service';
 import {
     enqueueFileJob,
     LEASE_DURATION_MS,
     markInterruptedJobsOnStartup,
 } from './services/job-queue.service';
+import {
+    getSourceDirectories,
+    queueManualCopyDirectories,
+} from './services/manual-copy.service';
 import {
     assertMountReady,
     commitMountRegistration,
@@ -25,10 +26,12 @@ import {
     registerConfiguredMounts,
 } from './services/mount.service';
 import {
-    cleanupQuarantine,
-    quarantineInvalidDirectories,
-} from './services/quarantine.service';
+    getScheduleSnapshot,
+    setupCronJobs,
+} from './services/schedule.service';
 import { getDateNDaysAgo, getDiskUsage } from './utils/utils';
+
+export { setupCronJobs } from './services/schedule.service';
 
 function errorResponse(error: unknown, status = 500): Response {
     return Response.json(
@@ -207,13 +210,76 @@ export const routes = {
             try {
                 const today = getDateNDaysAgo(0);
                 const name = `copy-current-${today}`;
-                enqueueFileJob(name, () => copyDirectory(today)).catch(
-                    () => undefined
-                );
+                enqueueFileJob(name, () => copyDirectory(today), {
+                    dedupeKey: `manual-copy-today:${today}`,
+                    trigger: 'manual',
+                }).catch(() => undefined);
                 return Response.json(
                     { status: 'queued', name },
                     { status: 202 }
                 );
+            } catch (error) {
+                return errorResponse(error);
+            }
+        },
+    },
+
+    '/api/jobs/copy-directories': {
+        POST: async (request: Request) => {
+            try {
+                const contentType = request.headers.get('content-type') ?? '';
+                if (!contentType.includes('application/json')) {
+                    return errorResponse(
+                        new Error('Content-Type must be application/json'),
+                        415
+                    );
+                }
+
+                const payload = await request.json();
+                if (
+                    !payload ||
+                    typeof payload !== 'object' ||
+                    Array.isArray(payload) ||
+                    Object.keys(payload).some((key) => key !== 'directories')
+                ) {
+                    return errorResponse(new Error('Invalid request body'), 400);
+                }
+
+                const job = await queueManualCopyDirectories(
+                    (payload as { directories?: unknown }).directories
+                );
+                job.promise.catch(() => undefined);
+                return Response.json(
+                    {
+                        status: 'queued',
+                        jobId: job.id,
+                        directoryCount: job.directoryCount,
+                        coalesced: job.coalesced,
+                    },
+                    { status: 202 }
+                );
+            } catch (error) {
+                return errorResponse(error, 400);
+            }
+        },
+    },
+
+    '/api/source-directories': {
+        GET: async () => {
+            try {
+                return Response.json({
+                    directories: await getSourceDirectories(),
+                });
+            } catch (error) {
+                return errorResponse(error);
+            }
+        },
+    },
+
+    '/api/schedules': {
+        GET: () => {
+            try {
+                return Response.json(getScheduleSnapshot());
             } catch (error) {
                 return errorResponse(error);
             }
@@ -252,50 +318,6 @@ export const routes = {
         GET: readinessResponse,
     },
 };
-
-function scheduled(name: string, task: () => Promise<void>): void {
-    enqueueFileJob(name, task).catch(() => undefined);
-}
-
-export function setupCronJobs(): Cron[] {
-    const options = { timezone: APP_TIMEZONE };
-
-    return [
-        new Cron('0 * * * *', options, () => {
-            const today = getDateNDaysAgo(0);
-            scheduled(`copy-current-${today}`, () => copyDirectory(today));
-        }),
-        new Cron('0 22 * * *', options, () => {
-            const yesterday = getDateNDaysAgo(1);
-            scheduled(`copy-yesterday-${yesterday}`, () =>
-                copyDirectory(yesterday)
-            );
-        }),
-        new Cron('0 3 * * *', options, () => {
-            scheduled('space-control-src', async () => {
-                const config = getConfig();
-                await spaceControlService('src', config.srcLimit);
-            });
-        }),
-        new Cron('0 4 * * *', options, () => {
-            scheduled('space-control-dest', async () => {
-                const config = getConfig();
-                await spaceControlService('dest', config.destLimit);
-            });
-        }),
-        new Cron('0 5 * * *', options, () => {
-            scheduled('cleanup-logs', cleanupOldLogs);
-        }),
-        new Cron('0 6 * * *', options, () => {
-            scheduled('quarantine-maintenance', async () => {
-                await quarantineInvalidDirectories('src');
-                await quarantineInvalidDirectories('dest');
-                await cleanupQuarantine('src');
-                await cleanupQuarantine('dest');
-            });
-        }),
-    ];
-}
 
 export function startServer(port = Number(process.env.PORT || 3001)) {
     return serve({

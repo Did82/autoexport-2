@@ -1,4 +1,4 @@
-import { dbHelpers } from '../libs/db';
+import { dbHelpers, type JobTrigger } from '../libs/db';
 
 const FILESYSTEM_LEASE = 'filesystem-mutations';
 export const LEASE_DURATION_MS = 60_000;
@@ -7,7 +7,32 @@ const LEASE_RETRY_MS = 500;
 const PROCESS_OWNER = `${process.pid}:${Bun.randomUUIDv7()}`;
 
 let tail: Promise<void> = Promise.resolve();
-const pendingByName = new Map<string, Promise<void>>();
+const pendingByKey = new Map<string, EnqueuedFileJob>();
+
+export interface JobProgress {
+    processedItems: number;
+    successfulItems: number;
+    failedItems: number;
+    currentItem: string | null;
+}
+
+export interface JobExecutionContext {
+    id: string;
+    updateProgress: (progress: JobProgress) => void;
+}
+
+export interface EnqueueFileJobOptions {
+    dedupeKey?: string;
+    trigger?: JobTrigger;
+    scheduleId?: string;
+    totalItems?: number;
+}
+
+export interface EnqueuedFileJob {
+    id: string;
+    promise: Promise<void>;
+    coalesced: boolean;
+}
 
 function timestamp(offsetMs = 0): string {
     return new Date(Date.now() + offsetMs).toISOString();
@@ -37,7 +62,7 @@ async function waitForLease(ownerId: string): Promise<void> {
 async function executeTrackedJob(
     id: string,
     name: string,
-    task: () => Promise<void>
+    task: (context: JobExecutionContext) => Promise<void>
 ): Promise<void> {
     const ownerId = `${PROCESS_OWNER}:${id}`;
     let acquired = false;
@@ -71,7 +96,11 @@ async function executeTrackedJob(
         }, HEARTBEAT_INTERVAL_MS);
         heartbeat.unref();
 
-        await task();
+        await task({
+            id,
+            updateProgress: (progress) =>
+                dbHelpers.updateJobProgress(id, progress),
+        });
         dbHelpers.finishJob(id, 'success', timestamp());
         console.log(`[job:done] ${name}`);
     } catch (error) {
@@ -89,38 +118,60 @@ async function executeTrackedJob(
     }
 }
 
-function createJobRun(name: string): string {
+function createJobRun(
+    name: string,
+    options: EnqueueFileJobOptions = {}
+): string {
     const id = Bun.randomUUIDv7();
-    dbHelpers.createJobRun({ id, name, queuedAt: timestamp() });
+    dbHelpers.createJobRun({
+        id,
+        name,
+        queuedAt: timestamp(),
+        trigger: options.trigger,
+        scheduleId: options.scheduleId,
+        totalItems: options.totalItems,
+    });
     return id;
+}
+
+export function enqueueFileJobWithHandle(
+    name: string,
+    task: (context: JobExecutionContext) => Promise<void>,
+    options: EnqueueFileJobOptions = {}
+): EnqueuedFileJob {
+    const key = options.dedupeKey ?? name;
+    const existing = pendingByKey.get(key);
+    if (existing) {
+        console.log(`[job:coalesced] ${name}`);
+        return { ...existing, coalesced: true };
+    }
+
+    const id = createJobRun(name, options);
+    const run = tail.then(() => executeTrackedJob(id, name, task));
+    const enqueued = { id, promise: run, coalesced: false };
+    pendingByKey.set(key, enqueued);
+    tail = run.catch(() => undefined);
+    void run.finally(() => {
+        if (pendingByKey.get(key)?.promise === run) pendingByKey.delete(key);
+    }).catch(() => undefined);
+
+    return enqueued;
 }
 
 export function enqueueFileJob(
     name: string,
-    task: () => Promise<void>
+    task: (context: JobExecutionContext) => Promise<void>,
+    options: EnqueueFileJobOptions = {}
 ): Promise<void> {
-    const existing = pendingByName.get(name);
-    if (existing) {
-        console.log(`[job:coalesced] ${name}`);
-        return existing;
-    }
-
-    const id = createJobRun(name);
-    const run = tail.then(() => executeTrackedJob(id, name, task));
-    pendingByName.set(name, run);
-    tail = run.catch(() => undefined);
-    void run.finally(() => {
-        if (pendingByName.get(name) === run) pendingByName.delete(name);
-    }).catch(() => undefined);
-
-    return run;
+    return enqueueFileJobWithHandle(name, task, options).promise;
 }
 
 export function runTrackedFileJob(
     name: string,
-    task: () => Promise<void>
+    task: (context: JobExecutionContext) => Promise<void>,
+    options: EnqueueFileJobOptions = {}
 ): Promise<void> {
-    return executeTrackedJob(createJobRun(name), name, task);
+    return executeTrackedJob(createJobRun(name, options), name, task);
 }
 
 export function markInterruptedJobsOnStartup(): number {

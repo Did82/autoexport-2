@@ -17,12 +17,14 @@ interface DatePickerProps {
     value?: string;
     onChange: (value: string) => void;
     placeholder?: string;
+    side?: 'top' | 'bottom';
 }
 
 export function DatePicker({
     value,
     onChange,
     placeholder = 'Выберите дату',
+    side = 'bottom',
 }: DatePickerProps) {
     const [open, setOpen] = useState(false);
     const date = value ? new Date(value) : undefined;
@@ -58,6 +60,7 @@ export function DatePicker({
             <PopoverContent
                 className="w-auto overflow-hidden p-0"
                 align="start"
+                side={side}
             >
                 <Calendar
                     mode="single"
