@@ -21,7 +21,7 @@ export function getConfigService(): Config {
     return getConfig();
 }
 
-export async function updateConfigService(input: unknown): Promise<Config> {
+export function prepareConfigUpdate(input: unknown): Config {
     if (!input || typeof input !== 'object' || Array.isArray(input)) {
         throw new Error('Request body must be a JSON object');
     }
@@ -43,5 +43,9 @@ export async function updateConfigService(input: unknown): Promise<Config> {
     const merged = normalizeConfig({ ...getConfig(), ...patch });
     const paths = validateManagedRoots(merged.src, merged.dest);
 
-    return updateConfig({ ...merged, ...paths });
+    return { ...merged, ...paths };
+}
+
+export function persistConfigService(config: Config): Promise<Config> {
+    return updateConfig(config);
 }

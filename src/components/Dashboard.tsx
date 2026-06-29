@@ -31,6 +31,17 @@ interface SpaceData {
     targetDiskUsage: DiskUsage;
 }
 
+const STATUS_REFRESH_MS = 15_000;
+const LOG_REFRESH_MS = 30_000;
+
+function isAbortError(error: unknown): boolean {
+    return error instanceof DOMException && error.name === 'AbortError';
+}
+
+function describeError(error: unknown): string {
+    return error instanceof Error ? error.message : 'Не удалось загрузить данные';
+}
+
 export function Dashboard({ configRevision }: DashboardProps) {
     const [spaceData, setSpaceData] = useState<SpaceData | null>(null);
     const [config, setConfig] = useState<Config | null>(null);
@@ -43,53 +54,112 @@ export function Dashboard({ configRevision }: DashboardProps) {
     const [error, setError] = useState<string | null>(null);
     const [autoRefresh, setAutoRefresh] = useState(false);
 
-    const loadData = useCallback(async (showLoading = false) => {
-        if (showLoading) setLoading(true);
-        setError(null);
+    const reportError = useCallback((loadError: unknown) => {
+        if (!isAbortError(loadError)) setError(describeError(loadError));
+    }, []);
 
-        try {
-            const [space, configData, copy, maintenance, errors, jobRuns, mountStatuses] =
-                await Promise.all([
-                    fetchAPI<SpaceData>('/api/space'),
-                    fetchAPI<Config>('/api/config'),
-                    fetchAPI<CopyLog[]>('/api/copy'),
-                    fetchAPI<DeleteLog[]>('/api/delete'),
-                    fetchAPI<ErrorLog[]>('/api/errors'),
-                    fetchAPI<JobRun[]>('/api/jobs'),
-                    fetchAPI<MountStatus[]>('/api/mounts'),
-                ]);
+    const loadConfiguration = useCallback(async (signal?: AbortSignal) => {
+        const configData = await fetchAPI<Config>('/api/config', { signal });
+        if (!signal?.aborted) setConfig(configData);
+    }, []);
 
-            setSpaceData(space);
-            setConfig(configData);
-            setCopyLogs(copy);
-            setDeleteLogs(maintenance);
-            setErrorLogs(errors);
-            setJobs(jobRuns);
-            setMounts(mountStatuses);
-        } catch (loadError) {
-            setError(
-                loadError instanceof Error
-                    ? loadError.message
-                    : 'Не удалось загрузить данные'
-            );
-        } finally {
-            if (showLoading) setLoading(false);
-        }
+    const loadLogs = useCallback(async (signal?: AbortSignal) => {
+        const [copy, maintenance, errors] = await Promise.all([
+            fetchAPI<CopyLog[]>('/api/copy', { signal }),
+            fetchAPI<DeleteLog[]>('/api/delete', { signal }),
+            fetchAPI<ErrorLog[]>('/api/errors', { signal }),
+        ]);
+        if (signal?.aborted) return;
+        setCopyLogs(copy);
+        setDeleteLogs(maintenance);
+        setErrorLogs(errors);
+    }, []);
+
+    const loadOperationalData = useCallback(async (signal?: AbortSignal) => {
+        const [space, jobRuns, mountStatuses] = await Promise.all([
+            fetchAPI<SpaceData>('/api/space', { signal }),
+            fetchAPI<JobRun[]>('/api/jobs', { signal }),
+            fetchAPI<MountStatus[]>('/api/mounts', { signal }),
+        ]);
+        if (signal?.aborted) return;
+        setSpaceData(space);
+        setJobs(jobRuns);
+        setMounts(mountStatuses);
     }, []);
 
     useEffect(() => {
-        void loadData(true);
-    }, [loadData]);
+        const controller = new AbortController();
+        let active = true;
+        setLoading(true);
+        setError(null);
+
+        void Promise.allSettled([
+            loadConfiguration(controller.signal),
+            loadLogs(controller.signal),
+            loadOperationalData(controller.signal),
+        ]).then((results) => {
+            if (!active) return;
+            const rejected = results.find(
+                (result): result is PromiseRejectedResult =>
+                    result.status === 'rejected' &&
+                    !isAbortError(result.reason)
+            );
+            if (rejected) reportError(rejected.reason);
+            setLoading(false);
+        });
+
+        return () => {
+            active = false;
+            controller.abort();
+        };
+    }, [loadConfiguration, loadLogs, loadOperationalData, reportError]);
 
     useEffect(() => {
-        if (configRevision > 0) void loadData();
-    }, [configRevision, loadData]);
+        if (configRevision <= 0) return;
+        const controller = new AbortController();
+        setError(null);
+        void Promise.all([
+            loadConfiguration(controller.signal),
+            loadOperationalData(controller.signal),
+        ]).catch(reportError);
+        return () => controller.abort();
+    }, [configRevision, loadConfiguration, loadOperationalData, reportError]);
+
+    useEffect(() => {
+        let controller: AbortController | null = null;
+        const refresh = () => {
+            controller?.abort();
+            controller = new AbortController();
+            void loadOperationalData(controller.signal)
+                .then(() => setError(null))
+                .catch(reportError);
+        };
+        const interval = window.setInterval(refresh, STATUS_REFRESH_MS);
+        return () => {
+            window.clearInterval(interval);
+            controller?.abort();
+        };
+    }, [loadOperationalData, reportError]);
 
     useEffect(() => {
         if (!autoRefresh) return;
-        const interval = window.setInterval(() => void loadData(), 30_000);
-        return () => window.clearInterval(interval);
-    }, [autoRefresh, loadData]);
+        let controller: AbortController | null = null;
+        const refresh = () => {
+            controller?.abort();
+            controller = new AbortController();
+            void loadLogs(controller.signal).catch(reportError);
+        };
+        refresh();
+        const interval = window.setInterval(refresh, LOG_REFRESH_MS);
+        return () => {
+            window.clearInterval(interval);
+            controller?.abort();
+        };
+    }, [autoRefresh, loadLogs, reportError]);
+
+    const handleJobQueued = useCallback(() => {
+        void loadOperationalData().catch(reportError);
+    }, [loadOperationalData, reportError]);
 
     if (loading) {
         return (
@@ -140,14 +210,18 @@ export function Dashboard({ configRevision }: DashboardProps) {
                 />
             </div>
 
-            <AutomationStatusCard jobs={jobs} mounts={mounts} />
+            <AutomationStatusCard
+                jobs={jobs}
+                mounts={mounts}
+                onJobQueued={handleJobQueued}
+            />
 
             <Card>
                 <CardHeader className="flex flex-row items-center justify-between gap-4">
                     <CardTitle>Журнал операций</CardTitle>
                     <Field orientation="horizontal" className="w-auto">
                         <FieldLabel htmlFor="auto-refresh">
-                            Автообновление
+                            Автообновление журналов
                         </FieldLabel>
                         <Switch
                             id="auto-refresh"

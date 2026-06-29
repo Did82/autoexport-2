@@ -2,11 +2,13 @@ import { serve } from 'bun';
 import { Cron } from 'croner';
 import index from '../src/index.html';
 import { APP_TIMEZONE, getConfig } from './libs/config';
+import { isRsyncAvailable } from './libs/copy';
 import { checkDatabase, dbHelpers, initSchema } from './libs/db';
 import { cleanupOldLogs } from './services/cleanup.service';
 import {
     getConfigService,
-    updateConfigService,
+    persistConfigService,
+    prepareConfigUpdate,
 } from './services/config.service';
 import { copyDirectory } from './services/copy.service';
 import { spaceControlService } from './services/delete.service';
@@ -17,7 +19,9 @@ import {
 } from './services/job-queue.service';
 import {
     assertMountReady,
+    commitMountRegistration,
     getMountStatuses,
+    prepareMountRegistration,
     registerConfiguredMounts,
 } from './services/mount.service';
 import {
@@ -43,12 +47,15 @@ async function readinessResponse(): Promise<Response> {
 
     try {
         const mounts = await getMountStatuses();
+        const rsync = isRsyncAvailable() ? 'ok' : 'missing';
         const ready =
-            database === 'ok' && mounts.every((mount) => mount.status === 'ok');
+            database === 'ok' &&
+            rsync === 'ok' &&
+            mounts.every((mount) => mount.status === 'ok');
         return Response.json(
             {
                 status: ready ? 'ok' : 'not_ready',
-                checks: { database, mounts },
+                checks: { database, rsync, mounts },
             },
             { status: ready ? 200 : 503 }
         );
@@ -56,7 +63,11 @@ async function readinessResponse(): Promise<Response> {
         return Response.json(
             {
                 status: 'not_ready',
-                checks: { database, mounts: [] },
+                checks: {
+                    database,
+                    rsync: isRsyncAvailable() ? 'ok' : 'missing',
+                    mounts: [],
+                },
                 error: error instanceof Error ? error.message : String(error),
             },
             { status: 503 }
@@ -83,9 +94,32 @@ export const routes = {
                     );
                 }
 
-                const config = await updateConfigService(await request.json());
-                await registerConfiguredMounts(config);
-                return Response.json(config);
+                const previousConfig = getConfigService();
+                const candidate = prepareConfigUpdate(await request.json());
+                const identities = await prepareMountRegistration(candidate);
+                let persisted = false;
+
+                try {
+                    const config = await persistConfigService(candidate);
+                    persisted = true;
+                    commitMountRegistration(identities);
+                    return Response.json(config);
+                } catch (error) {
+                    if (persisted) {
+                        try {
+                            await persistConfigService(previousConfig);
+                        } catch (rollbackError) {
+                            console.error(
+                                '[config:rollback-error]',
+                                rollbackError
+                            );
+                            throw new Error(
+                                `Configuration update failed and rollback was unsuccessful: ${String(error)}`
+                            );
+                        }
+                    }
+                    throw error;
+                }
             } catch (error) {
                 return errorResponse(error, 400);
             }
@@ -161,6 +195,24 @@ export const routes = {
                             Date.parse(job.heartbeatAt ?? job.startedAt ?? '') <
                                 staleBefore,
                     }))
+                );
+            } catch (error) {
+                return errorResponse(error);
+            }
+        },
+    },
+
+    '/api/jobs/copy-today': {
+        POST: () => {
+            try {
+                const today = getDateNDaysAgo(0);
+                const name = `copy-current-${today}`;
+                enqueueFileJob(name, () => copyDirectory(today)).catch(
+                    () => undefined
+                );
+                return Response.json(
+                    { status: 'queued', name },
+                    { status: 202 }
                 );
             } catch (error) {
                 return errorResponse(error);

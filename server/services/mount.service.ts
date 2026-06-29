@@ -76,30 +76,39 @@ async function createOrReadMarker(root: string): Promise<string> {
     }
 }
 
-async function registerTarget(
+async function prepareTarget(
     target: StorageTarget,
     root: string
 ): Promise<MountIdentity> {
     await access(root, constants.R_OK | constants.W_OK);
-    const identity: MountIdentity = {
+    return {
         target,
         root,
         markerId: await createOrReadMarker(root),
         registeredAt: new Date().toISOString(),
     };
-    dbHelpers.upsertMountIdentity(identity);
-    return identity;
+}
+
+export async function prepareMountRegistration(
+    input: Config = getConfig()
+): Promise<MountIdentity[]> {
+    const roots = validateManagedRoots(input.src, input.dest);
+    return Promise.all([
+        prepareTarget('src', roots.src),
+        prepareTarget('dest', roots.dest),
+    ]);
+}
+
+export function commitMountRegistration(identities: MountIdentity[]): void {
+    dbHelpers.replaceMountIdentities(identities);
 }
 
 export async function registerConfiguredMounts(
     input: Config = getConfig()
 ): Promise<MountStatus[]> {
-    const roots = validateManagedRoots(input.src, input.dest);
-    await Promise.all([
-        registerTarget('src', roots.src),
-        registerTarget('dest', roots.dest),
-    ]);
-    return getMountStatuses({ ...input, ...roots });
+    const identities = await prepareMountRegistration(input);
+    commitMountRegistration(identities);
+    return getMountStatuses(input);
 }
 
 export async function getMountStatus(
@@ -174,9 +183,10 @@ export async function assertMountReady(
 ): Promise<void> {
     const status = await getMountStatus(target, input);
     if (status.status !== 'ok') {
-        const label = target === 'src' ? 'Источник' : 'Хранилище';
+        const subject =
+            target === 'src' ? 'Источник не готов' : 'Хранилище не готово';
         throw new Error(
-            `${label} не готово к работе (${status.status}): ${status.message}`
+            `${subject} к работе (${status.status}): ${status.message}`
         );
     }
 }

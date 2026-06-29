@@ -140,9 +140,10 @@ export function getConfig(): Config {
     }
 
     if (!watchingConfig) {
-        watchFile(CONFIG_PATH, { interval: 1000 }, () => {
+        const watcher = watchFile(CONFIG_PATH, { interval: 1000 }, () => {
             configCache = null;
         });
+        watcher.unref();
         watchingConfig = true;
     }
 

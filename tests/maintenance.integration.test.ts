@@ -86,6 +86,30 @@ afterEach(async () => {
 });
 
 describe('safe maintenance workflow', () => {
+    test('copy-all exits after an empty successful run', async () => {
+        const environment = await createEnvironment();
+        await runIsolated('process.exit(0);', environment);
+
+        const processHandle = Bun.spawn(['bun', 'server/copy_all.ts'], {
+            cwd: process.cwd(),
+            env: {
+                ...process.env,
+                CONFIG_PATH: environment.configPath,
+                DATABASE_PATH: environment.databasePath,
+            },
+            stdout: 'pipe',
+            stderr: 'pipe',
+        });
+
+        const result = await Promise.race([
+            processHandle.exited,
+            Bun.sleep(2_000).then(() => 'timeout' as const),
+        ]);
+        if (result === 'timeout') processHandle.kill();
+
+        expect(result).toBe(0);
+    });
+
     test('copies and verifies an old source directory before deletion', async () => {
         if (!Bun.which('rsync')) return;
 

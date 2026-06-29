@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { getDateNDaysAgo } from '../server/utils/utils';
 
 let root = '';
 let baseUrl = '';
@@ -120,6 +121,28 @@ describe('configuration API', () => {
         expect(reread.destLimit).toBe(81);
     });
 
+    test('does not persist configuration when mount registration fails', async () => {
+        const before = (await (
+            await fetch(`${baseUrl}/api/config`)
+        ).json()) as Record<string, unknown>;
+        const invalidSource = join(root, 'invalid-source');
+        await mkdir(invalidSource);
+        await writeFile(join(invalidSource, '.autoexport-mount-id'), 'bad\n');
+
+        const response = await fetch(`${baseUrl}/api/config`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ src: invalidSource }),
+        });
+        const after = (await (
+            await fetch(`${baseUrl}/api/config`)
+        ).json()) as Record<string, unknown>;
+
+        expect(response.status).toBe(400);
+        expect(after).toEqual(before);
+        expect((await fetch(`${baseUrl}/api/ready`)).status).toBe(200);
+    });
+
     test('rejects unknown config fields and removed endpoints', async () => {
         const invalid = await fetch(`${baseUrl}/api/config`, {
             method: 'POST',
@@ -136,5 +159,35 @@ describe('configuration API', () => {
         const response = await fetch(`${baseUrl}/api/jobs`);
         expect(response.status).toBe(200);
         expect(Array.isArray(await response.json())).toBe(true);
+    });
+
+    test('queues a manual synchronization for the current day', async () => {
+        const response = await fetch(`${baseUrl}/api/jobs/copy-today`, {
+            method: 'POST',
+        });
+        const accepted = (await response.json()) as { name: string };
+        const expectedName = `copy-current-${getDateNDaysAgo(0)}`;
+
+        expect(response.status).toBe(202);
+        expect(accepted.name).toBe(expectedName);
+
+        let completed = false;
+        for (let attempt = 0; attempt < 50; attempt += 1) {
+            const jobs = (await (
+                await fetch(`${baseUrl}/api/jobs`)
+            ).json()) as Array<{ name: string; status: string }>;
+            if (
+                jobs.some(
+                    (job) =>
+                        job.name === expectedName && job.status === 'success'
+                )
+            ) {
+                completed = true;
+                break;
+            }
+            await Bun.sleep(20);
+        }
+
+        expect(completed).toBe(true);
     });
 });

@@ -365,17 +365,27 @@ export const dbHelpers = {
             .run(name, ownerId);
     },
 
-    upsertMountIdentity(data: MountIdentity): void {
-        getDb()
-            .prepare(`
+    replaceMountIdentities(identities: MountIdentity[]): void {
+        const database = getDb();
+        const replace = database.transaction((items: MountIdentity[]) => {
+            const statement = database.prepare(`
                 INSERT INTO MountIdentity (target, root, markerId, registeredAt)
                 VALUES (?, ?, ?, ?)
                 ON CONFLICT(target) DO UPDATE SET
                     root = excluded.root,
                     markerId = excluded.markerId,
                     registeredAt = excluded.registeredAt
-            `)
-            .run(data.target, data.root, data.markerId, data.registeredAt);
+            `);
+            for (const item of items) {
+                statement.run(
+                    item.target,
+                    item.root,
+                    item.markerId,
+                    item.registeredAt
+                );
+            }
+        });
+        replace(identities);
     },
 
     getMountIdentity(target: StorageTarget): MountIdentity | null {

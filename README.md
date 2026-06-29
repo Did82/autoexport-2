@@ -64,6 +64,7 @@ bun run check
 | `CONFIG_PATH` | `./config.json` | Путь к конфигурации |
 | `DATABASE_PATH` | `./autoexport.db` | Путь к SQLite |
 | `PORT` | `3001` | HTTP-порт |
+| `RSYNC_TIMEOUT_SECONDS` | `600` | I/O-таймаут rsync, от 30 до 86400 секунд |
 
 Переменные окружения задают начальные значения. После создания `config.json`
 настройки изменяются через интерфейс или API.
@@ -115,10 +116,11 @@ SMB или SSHFS.
 | `/api/delete` | GET | Журнал обслуживания и карантина |
 | `/api/errors` | GET | Журнал ошибок |
 | `/api/jobs` | GET | Последние фоновые задания и heartbeat |
+| `/api/jobs/copy-today` | POST | Поставить синхронизацию текущего дня в очередь |
 | `/api/mounts` | GET | Проверка защитных маркеров хранилищ |
 | `/api/mounts/register` | POST | Повторная регистрация подключённых хранилищ |
 | `/api/live` | GET | Liveness процесса; всегда `200`, пока HTTP-сервер жив |
-| `/api/ready` | GET | Readiness БД и обоих хранилищ; `503` при проблеме |
+| `/api/ready` | GET | Readiness БД, rsync и обоих хранилищ; `503` при проблеме |
 | `/api/health` | GET | Совместимый alias для `/api/ready` |
 
 API рассчитан на доверенную внутреннюю сеть. Для публикации наружу используйте

@@ -1,6 +1,28 @@
 import { $ } from 'bun';
 import { existsSync, statSync } from 'node:fs';
 
+function positiveIntegerFromEnv(name: string, fallback: number): number {
+    const value = Number(process.env[name]);
+    return Number.isInteger(value) && value >= 30 && value <= 86_400
+        ? value
+        : fallback;
+}
+
+export const RSYNC_IO_TIMEOUT_SECONDS = positiveIntegerFromEnv(
+    'RSYNC_TIMEOUT_SECONDS',
+    600
+);
+
+export function isRsyncAvailable(): boolean {
+    return Boolean(Bun.which('rsync'));
+}
+
+function assertRsyncAvailable(): void {
+    if (!isRsyncAvailable()) {
+        throw new Error('rsync is not installed or is not available in PATH');
+    }
+}
+
 export interface CopyResult {
     filesCopied: number;
     bytesCopied: string;
@@ -26,12 +48,14 @@ export async function copyFiles({
 }): Promise<CopyResult> {
     const startTime = Date.now();
     const { srcPath, destPath } = normalizeCopyPaths(src, dest);
+    assertRsyncAvailable();
 
     if (!existsSync(srcPath) || !statSync(srcPath).isDirectory()) {
         throw new Error(`Source directory does not exist: ${srcPath}`);
     }
 
-    const result = await $`rsync -a --stats --no-owner --no-group ${srcPath} ${destPath}`
+    const result = await $`rsync -a --stats --no-owner --no-group --timeout=${RSYNC_IO_TIMEOUT_SECONDS} ${srcPath} ${destPath}`
+        .env({ ...process.env, LC_ALL: 'C', LANG: 'C' })
         .quiet()
         .nothrow();
     const stderr = result.stderr.toString();
@@ -65,13 +89,15 @@ export async function verifyFiles({
     dest: string;
 }): Promise<{ synced: boolean; changes: string[] }> {
     const { srcPath, destPath } = normalizeCopyPaths(src, dest);
+    assertRsyncAvailable();
     if (!existsSync(srcPath) || !existsSync(destPath)) {
         return { synced: false, changes: ['source or destination is missing'] };
     }
 
     const outputFormat = '--out-format=%i|%n';
     const result =
-        await $`rsync -a --dry-run --itemize-changes --no-owner --no-group ${outputFormat} ${srcPath} ${destPath}`
+        await $`rsync -a --dry-run --itemize-changes --no-owner --no-group --timeout=${RSYNC_IO_TIMEOUT_SECONDS} ${outputFormat} ${srcPath} ${destPath}`
+            .env({ ...process.env, LC_ALL: 'C', LANG: 'C' })
             .quiet()
             .nothrow();
     if (result.exitCode !== 0) {

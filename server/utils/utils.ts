@@ -85,7 +85,10 @@ export async function getDiskUsage(root: string): Promise<DiskUsage> {
         throw new Error(`Path does not exist: ${root}`);
     }
 
-    const result = await $`df -k ${root}`.quiet().nothrow();
+    const result = await $`df -Pk ${root}`
+        .env({ ...process.env, LC_ALL: 'C', LANG: 'C' })
+        .quiet()
+        .nothrow();
     if (result.exitCode !== 0) {
         throw new Error(result.stderr.toString().trim() || 'df failed');
     }
